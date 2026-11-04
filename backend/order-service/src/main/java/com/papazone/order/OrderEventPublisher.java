@@ -1,0 +1,5 @@
+package com.papazone.order;
+import org.springframework.stereotype.Component; import org.springframework.beans.factory.annotation.Value; import org.springframework.web.client.RestClient; import java.util.*; import java.nio.charset.StandardCharsets; import java.util.Base64;
+@Component public class OrderEventPublisher { @Value("${PUBSUB_ENABLED:false}") boolean enabled; @Value("${PUBSUB_PROJECT_ID:local-project}") String project; @Value("${PUBSUB_TOPIC:order-events}") String topic; @Value("${PUBSUB_EMULATOR_HOST:localhost:8085}") String host; private final RestClient client=RestClient.create();
+ public void publish(String event){if(!enabled){System.out.println("[LOCAL EVENT] "+event);return;}try{String data=Base64.getEncoder().encodeToString(event.getBytes(StandardCharsets.UTF_8));client.post().uri("http://"+host+"/v1/projects/"+project+"/topics/"+topic+":publish").body(Map.of("messages",List.of(Map.of("data",data)))).retrieve().toBodilessEntity();}catch(Exception e){System.err.println("Pub/Sub publish failed: "+e.getMessage());}}
+}

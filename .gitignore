@@ -1,0 +1,30 @@
+# IntelliJ IDEA
+.idea/
+*.iml
+
+# Java / Maven
+**/target/
+*.jar
+
+# React / Node
+**/node_modules/
+**/dist/
+**/coverage/
+
+# Build output
+**/build/
+**/.gradle/
+
+# Git and logs
+.git/
+**/logs/
+*.log
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db

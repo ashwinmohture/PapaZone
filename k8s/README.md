@@ -1,0 +1,2 @@
+# Kubernetes deployment notes
+Build and push each Docker image, then create Deployment + Service resources for MySQL 8.0, Eureka, each backend service, gateway and frontend. Configure service DNS names and secrets using Kubernetes Secrets/ConfigMaps. The Compose file is the supported one-command local environment. These manifests intentionally provide a namespace starter only; production K8s requires per-service probes, resource requests/limits, autoscaling, ingress/TLS, secrets and persistent storage.

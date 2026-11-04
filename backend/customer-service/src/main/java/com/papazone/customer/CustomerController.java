@@ -1,0 +1,9 @@
+package com.papazone.customer;
+import org.springframework.web.bind.annotation.*; import org.springframework.http.*; import java.util.*;
+@RestController @RequestMapping("/customers") @CrossOrigin(origins="*") public class CustomerController {
+ private final CustomerRepository repo; public CustomerController(CustomerRepository repo){this.repo=repo;}
+ public record RegisterRequest(String name,String email,String phone,String password){} public record LoginRequest(String email,String password){}
+ @PostMapping("/register") public ResponseEntity<?> register(@RequestBody RegisterRequest r){ if(r.name()==null||r.email()==null||r.password()==null)return ResponseEntity.badRequest().body(Map.of("message","name, email and password are required")); if(repo.findByEmail(r.email()).isPresent())return ResponseEntity.status(409).body(Map.of("message","Email already registered")); Customer c=new Customer();c.setName(r.name());c.setEmail(r.email());c.setPhone(r.phone());c.setPassword(r.password());repo.save(c);return ResponseEntity.status(201).body(Map.of("id",c.getId(),"name",c.getName(),"email",c.getEmail())); }
+ @PostMapping("/login") public ResponseEntity<?> login(@RequestBody LoginRequest r){return repo.findByEmail(r.email()).filter(c->Objects.equals(c.getPassword(),r.password())).<ResponseEntity<?>>map(c->ResponseEntity.ok(Map.of("token","demo-token-"+c.getId(),"customerId",c.getId(),"name",c.getName(),"email",c.getEmail()))).orElseGet(()->ResponseEntity.status(401).body(Map.of("message","Invalid email or password")));}
+ @GetMapping("/{id}") public ResponseEntity<?> get(@PathVariable Long id){return repo.findById(id).<ResponseEntity<?>>map(c->ResponseEntity.ok(Map.of("id",c.getId(),"name",c.getName(),"email",c.getEmail(),"phone",c.getPhone()==null?"":c.getPhone()))).orElse(ResponseEntity.notFound().build());}
+}

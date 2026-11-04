@@ -1,0 +1,49 @@
+server:
+  port: 8080
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOrigins: "*"
+            allowedMethods: "*"
+            allowedHeaders: "*"
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      routes:
+        - id: customer
+          uri: lb://CUSTOMER-SERVICE
+          predicates: [Path=/api/customers/**]
+          filters: [StripPrefix=1]
+        - id: menu
+          uri: lb://MENU-SERVICE
+          predicates: [Path=/api/menu/**]
+          filters: [StripPrefix=1]
+        - id: cart
+          uri: lb://CART-SERVICE
+          predicates: [Path=/api/cart/**]
+          filters: [StripPrefix=1]
+        - id: orders
+          uri: lb://ORDER-SERVICE
+          predicates: [Path=/api/orders/**]
+          filters: [StripPrefix=1]
+        - id: payments
+          uri: lb://PAYMENT-SERVICE
+          predicates: [Path=/api/payments/**]
+          filters: [StripPrefix=1]
+        - id: deliveries
+          uri: lb://DELIVERY-SERVICE
+          predicates: [Path=/api/deliveries/**]
+          filters: [StripPrefix=1]
+eureka:
+  instance:
+    prefer-ip-address: false
+    hostname: ${EUREKA_INSTANCE_HOSTNAME:localhost}
+  client:
+    service-url:
+      defaultZone: ${EUREKA_CLIENT_SERVICEURL_DEFAULTZONE:http://localhost:8761/eureka}
