@@ -77,43 +77,43 @@ jobs:
       matrix:
         include:
           - image: ai-service
-            dockerfile: ai-service/Dockerfile
+            dockerfile: backend/ai-service/Dockerfile
             context: backend
 
           - image: api-gateway
-            dockerfile: api-gateway/Dockerfile
+            dockerfile: backend/api-gateway/Dockerfile
             context: backend
 
           - image: cart-service
-            dockerfile: cart-service/Dockerfile
+            dockerfile: backend/cart-service/Dockerfile
             context: backend
 
           - image: customer-service
-            dockerfile: customer-service/Dockerfile
+            dockerfile: backend/customer-service/Dockerfile
             context: backend
 
           - image: delivery-service
-            dockerfile: delivery-service/Dockerfile
+            dockerfile: backend/delivery-service/Dockerfile
             context: backend
 
           - image: discovery-server
-            dockerfile: discovery-server/Dockerfile
+            dockerfile: backend/discovery-server/Dockerfile
             context: backend
 
           - image: menu-service
-            dockerfile: menu-service/Dockerfile
+            dockerfile: backend/menu-service/Dockerfile
             context: backend
 
           - image: order-service
-            dockerfile: order-service/Dockerfile
+            dockerfile: backend/order-service/Dockerfile
             context: backend
 
           - image: payment-service
-            dockerfile: payment-service/Dockerfile
+            dockerfile: backend/payment-service/Dockerfile
             context: backend
 
           - image: frontend
-            dockerfile: Dockerfile
+            dockerfile: frontend/Dockerfile
             context: frontend
 
     steps:
