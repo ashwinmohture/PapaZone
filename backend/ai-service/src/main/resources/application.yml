@@ -1,0 +1,43 @@
+server:
+  port: 8088   # 8087 is used on the host by the Pub/Sub emulator
+
+spring:
+  application:
+    name: ai-service
+
+ai:
+  timezone: ${AI_TIMEZONE:Asia/Kolkata}
+
+
+  llm:
+    base-url: ${GEMINI_BASE_URL:https://generativelanguage.googleapis.com}
+    api-key: ${GEMINI_API_KEY:}
+    model: ${AI_MODEL:gemini-2.5-flash}
+    max-tokens: 1024
+    timeout: 30s
+
+
+  services:
+    menu-url: ${MENU_SERVICE_URL:http://localhost:8082}
+    order-url: ${ORDER_SERVICE_URL:http://localhost:8084}
+
+  limits:
+    chat-per-minute: 12
+    admin-per-minute: 20
+    max-message-chars: 500
+    max-history: 10
+
+  security:
+    # Same JWT_SECRET (base64) as customer-service. Used only to VERIFY tokens.
+    # Blank = everyone is anonymous and the admin assistant is disabled.
+    jwt-secret: ${JWT_SECRET:}
+    # Shared secret for order-service /orders/export. Must match order-service.
+    internal-key: ${INTERNAL_API_KEY:}
+
+eureka:
+  instance:
+    prefer-ip-address: false
+    hostname: ${EUREKA_INSTANCE_HOSTNAME:localhost}
+  client:
+    service-url:
+      defaultZone: ${EUREKA_CLIENT_SERVICEURL_DEFAULTZONE:http://localhost:8761/eureka}

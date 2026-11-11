@@ -1,0 +1,84 @@
+package com.papazone.ai.client;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.papazone.ai.config.AiProperties;
+import com.papazone.ai.web.AiException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.MediaType;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
+
+/**
+ * Thin client for the Anthropic Messages API. Swap this one class to use a
+ * different LLM provider; everything else only sees JsonNode.
+ */
+@Component
+public class AnthropicClient {
+
+    private static final Logger log = LoggerFactory.getLogger(AnthropicClient.class);
+    private static final String API_VERSION = "2023-06-01";
+
+    private final RestClient http;
+    private final AiProperties props;
+    private final ObjectMapper mapper;
+
+    public AnthropicClient(@Qualifier("llmRestClient") RestClient http, AiProperties props, ObjectMapper mapper) {
+        this.http = http;
+        this.props = props;
+        this.mapper = mapper;
+    }
+
+    /** Request body pre-filled with model, max_tokens and system prompt. */
+    public ObjectNode newRequest(String system) {
+        ObjectNode body = mapper.createObjectNode();
+        body.put("model", props.llm().model());
+        body.put("max_tokens", props.llm().maxTokens());
+        body.put("system", system);
+        return body;
+    }
+
+    public JsonNode send(ObjectNode body) {
+        if (!props.llm().configured()) {
+            throw new AiException(503, "The AI assistant is not configured yet.");
+        }
+
+        try {
+            JsonNode response = http.post()
+                    .uri("/v1/messages")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .header("x-api-key", props.llm().apiKey())
+                    .header("anthropic-version", API_VERSION)
+                    .body(body)
+                    .retrieve()
+                    .body(JsonNode.class);
+
+            if (response == null) {
+                throw new AiException(502, "The AI assistant returned an empty response.");
+            }
+            return response;
+
+        } catch (RestClientResponseException e) {
+            // Never log the request (it contains the API key header) - only status and provider message.
+            log.error("LLM provider error {}: {}", e.getStatusCode().value(), abbreviate(e.getResponseBodyAsString()));
+
+            if (e.getStatusCode().value() == 429 || e.getStatusCode().value() == 529) {
+                throw new AiException(503, "The AI assistant is busy right now. Please try again shortly.");
+            }
+            throw new AiException(502, "The AI assistant is temporarily unavailable.");
+
+        } catch (ResourceAccessException e) {
+            log.error("LLM provider unreachable or timed out: {}", e.getMessage());
+            throw new AiException(504, "The AI assistant took too long to respond. Please try again.");
+        }
+    }
+
+    private static String abbreviate(String s) {
+        return s == null ? "" : s.length() > 500 ? s.substring(0, 500) + "..." : s;
+    }
+}
