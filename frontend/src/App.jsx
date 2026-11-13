@@ -22,6 +22,9 @@ import {
 } from 'lucide-react';
 
 import api from './api';
+import AiChatWidget from './ai/AiChatWidget';
+import Recommendations from './ai/Recommendations';
+import AdminAssistant from './ai/AdminAssistant';
 
 const money = n => '₹' + Number(n || 0).toFixed(2);
 function parseOrderItems(itemsJson) {
@@ -130,6 +133,8 @@ function App() {
                 <Route path="/admin" element={<Admin />} />
             </Routes>
 
+            <AiChatWidget onCartChange={refresh} />
+
             <footer>
                 © 2026 Papa Zone · Freshly baked, delivered with care.
             </footer>
@@ -210,6 +215,8 @@ function Menu({ onAdd }) {
                     FRESH<br />& TASTY
                 </div>
             </section>
+
+            <Recommendations onAdd={onAdd} />
 
             <section id="menu" className="menu-section">
                 <div className="section-head">
@@ -464,6 +471,7 @@ function Login() {
                 localStorage.setItem('token', response.data.token);
                 localStorage.setItem('customerId', response.data.customerId);
                 localStorage.setItem('customerName', response.data.name);
+                localStorage.setItem('role', response.data.role || 'CUSTOMER');
 
                 nav('/');
             }
@@ -1077,6 +1085,8 @@ function Admin() {
             </div>
 
             {msg && <p className="notice">{msg}</p>}
+
+            <AdminAssistant />
 
             {/* Dashboard Statistics */}
             <div className="admin-grid">

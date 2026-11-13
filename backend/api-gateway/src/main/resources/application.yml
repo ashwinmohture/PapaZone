@@ -40,6 +40,10 @@ spring:
           uri: lb://DELIVERY-SERVICE
           predicates: [Path=/api/deliveries/**]
           filters: [StripPrefix=1]
+        - id: ai
+          uri: lb://AI-SERVICE
+          predicates: [ Path=/api/ai/** ]
+          filters: [ StripPrefix=1 ]
 eureka:
   instance:
     prefer-ip-address: false

@@ -6,6 +6,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestClient;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.Instant;
 import java.util.*;
 
 @RestController
@@ -16,6 +21,11 @@ public class OrderController {
     private final OrderRepository repo;
     private final OrderEventPublisher events;
     private final RestClient http = RestClient.create();
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    // Shared secret for service-to-service calls (ai-service). Empty = export disabled.
+    @Value("${INTERNAL_API_KEY:}")
+    String internalKey;
 
     @Value("${CART_SERVICE_URL:http://localhost:8083}")
     String cartUrl;
@@ -83,7 +93,8 @@ public class OrderController {
             OrderEntity o = new OrderEntity();
 
             o.setCustomerId(req.customerId());
-            o.setItemsJson(items.toString());
+            // Store real JSON (was List.toString(), which is not parseable JSON).
+            o.setItemsJson(JSON.writeValueAsString(items));
             o.setSubtotal(subtotal);
             o.setDeliveryFee(subtotal >= 499 ? 0 : 40);
             o.setTax(Math.round(subtotal * 0.05 * 100.0) / 100.0);
@@ -158,8 +169,55 @@ public class OrderController {
         }
     }
 
+    // Minimal order view for internal analytics: no address, no payment data.
+    public record OrderExport(
+            Long id,
+            Long customerId,
+            Instant createdAt,
+            String status,
+            double subtotal,
+            double total,
+            String itemsJson
+    ) {}
+
+    // Internal export for ai-service: orders created in [from, to). Requires X-Internal-Key.
+    @GetMapping("/export")
+    public ResponseEntity<?> export(
+            @RequestHeader(value = "X-Internal-Key", required = false) String key,
+            @RequestParam("from") String from,
+            @RequestParam("to") String to) {
+
+        if (internalKey == null || internalKey.isBlank() || key == null ||
+                !MessageDigest.isEqual(
+                        internalKey.getBytes(StandardCharsets.UTF_8),
+                        key.getBytes(StandardCharsets.UTF_8))) {
+
+            return ResponseEntity.status(403)
+                    .body(Map.of("message", "Forbidden"));
+        }
+
+        try {
+            List<OrderExport> rows = repo
+                    .findByCreatedAtGreaterThanEqualAndCreatedAtLessThan(
+                            Instant.parse(from), Instant.parse(to))
+                    .stream()
+                    .map(o -> new OrderExport(
+                            o.getId(), o.getCustomerId(), o.getCreatedAt(),
+                            o.getStatus(), o.getSubtotal(), o.getTotal(),
+                            o.getItemsJson()))
+                    .toList();
+
+            return ResponseEntity.ok(rows);
+
+        } catch (java.time.format.DateTimeParseException e) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("message", "from/to must be ISO-8601 instants"));
+        }
+    }
+
     // Get Order by ID
-    @GetMapping("/{id}")
+//    @GetMapping("/{id}")
+    @GetMapping("/{id:\\d+}")
     public ResponseEntity<?> get(
             @PathVariable("id") Long id) {
 
