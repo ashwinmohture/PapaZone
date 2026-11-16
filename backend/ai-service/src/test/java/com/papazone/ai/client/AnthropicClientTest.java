@@ -2,6 +2,7 @@ package com.papazone.ai.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.papazone.ai.config.AiProperties;
 import org.junit.jupiter.api.BeforeEach;
@@ -169,5 +170,122 @@ class AnthropicClientTest {
 
         server.verify();
     }
-}
 
+
+    @Test
+    void shouldPreserveThoughtSignatureAcrossFunctionCallRoundTrip() throws Exception {
+
+        String thoughtSignature = "test-thought-signature-123";
+
+        String geminiResponse = """
+            {
+              "candidates": [
+                {
+                  "content": {
+                    "role": "model",
+                    "parts": [
+                      {
+                        "functionCall": {
+                          "name": "run_analytics",
+                          "args": {
+                            "query": "total_orders"
+                          }
+                        },
+                        "thoughtSignature": "test-thought-signature-123"
+                      }
+                    ]
+                  },
+                  "finishReason": "STOP"
+                }
+              ]
+            }
+            """;
+
+        // First request: Gemini returns a function call.
+        server.expect(requestTo(
+                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess(
+                        geminiResponse,
+                        MediaType.APPLICATION_JSON
+                ));
+
+        // Register the second request expectation before sending the first request.
+        server.expect(requestTo(
+                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath(
+                        "$.contents[0].parts[0].thoughtSignature"
+                ).value(thoughtSignature))
+                .andExpect(jsonPath(
+                        "$.contents[0].parts[0].functionCall.name"
+                ).value("run_analytics"))
+                .andRespond(withSuccess("""
+                    {
+                      "candidates": [
+                        {
+                          "content": {
+                            "role": "model",
+                            "parts": [
+                              {
+                                "text": "You received 6 orders."
+                              }
+                            ]
+                          },
+                          "finishReason": "STOP"
+                        }
+                      ]
+                    }
+                    """, MediaType.APPLICATION_JSON));
+
+        ObjectNode firstRequest = client.newRequest("PapaZone analytics assistant.");
+
+        firstRequest.putArray("messages")
+                .addObject()
+                .put("role", "user")
+                .put("content", "How many orders did we receive?");
+
+        JsonNode firstResponse = client.send(firstRequest);
+
+        JsonNode toolUse = firstResponse.path("content")
+                .get(0);
+
+        assertEquals("tool_use", toolUse.path("type").asText());
+        assertEquals("run_analytics", toolUse.path("name").asText());
+        assertEquals(
+                thoughtSignature,
+                toolUse.path("thought_signature").asText()
+        );
+
+        ObjectNode secondRequest = client.newRequest("PapaZone analytics assistant.");
+
+        ArrayNode messages = secondRequest.putArray("messages");
+
+        ObjectNode assistantMessage = messages.addObject();
+        assistantMessage.put("role", "assistant");
+
+        ArrayNode assistantContent = assistantMessage.putArray("content");
+
+        assistantContent.add(toolUse.deepCopy());
+
+        ObjectNode userMessage = messages.addObject();
+        userMessage.put("role", "user");
+
+        ArrayNode userContent = userMessage.putArray("content");
+
+        ObjectNode toolResult = userContent.addObject();
+        toolResult.put("type", "tool_result");
+        toolResult.put("tool_use_id", "run_analytics");
+        toolResult.put("content", "{\"total_orders\":6}");
+
+        JsonNode secondResponse = client.send(secondRequest);
+
+        assertEquals(
+                "You received 6 orders.",
+                LlmJson.text(secondResponse)
+        );
+
+        server.verify();
+    }
+
+}

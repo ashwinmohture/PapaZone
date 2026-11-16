@@ -138,13 +138,17 @@ public class AnthropicClient {
                 String type = block.path("type").asText();
 
                 if ("tool_use".equals(type)) {
+
+                    ObjectNode functionCallPart = parts.addObject();
+
                     ObjectNode functionCall =
-                            parts.addObject().putObject("functionCall");
+                            functionCallPart.putObject("functionCall");
 
                     functionCall.put(
                             "name", block.path("name").asText());
 
                     JsonNode input = block.path("input");
+
                     functionCall.set(
                             "args",
                             input.isObject()
@@ -152,6 +156,15 @@ public class AnthropicClient {
                                     : mapper.createObjectNode()
                     );
 
+                    // Restore Gemini thought signature.
+                    JsonNode thoughtSignature = block.path("thought_signature");
+
+                    if (thoughtSignature.isTextual()) {
+                        functionCallPart.put(
+                                "thoughtSignature",
+                                thoughtSignature.asText()
+                        );
+                    }
                 } else if ("tool_result".equals(type)) {
                     ObjectNode functionResponse =
                             parts.addObject().putObject("functionResponse");
@@ -321,6 +334,14 @@ public class AnthropicClient {
                 // Function name is used as the stable tool_use_id.
                 toolUse.put("id", name);
 
+//                JsonNode args = call.path("args");
+//
+//                toolUse.set(
+//                        "input",
+//                        args.isObject()
+//                                ? args.deepCopy()
+//                                : mapper.createObjectNode()
+//                );
                 JsonNode args = call.path("args");
 
                 toolUse.set(
@@ -329,6 +350,13 @@ public class AnthropicClient {
                                 ? args.deepCopy()
                                 : mapper.createObjectNode()
                 );
+
+                // Preserve Gemini thought signature for the next request.
+                JsonNode thoughtSignature = part.path("thoughtSignature");
+
+                if (thoughtSignature.isTextual()) {
+                    toolUse.put("thought_signature", thoughtSignature.asText());
+                }
             }
         }
 
