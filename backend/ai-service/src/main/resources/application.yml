@@ -8,14 +8,17 @@ spring:
 ai:
   timezone: ${AI_TIMEZONE:Asia/Kolkata}
 
-
   llm:
     base-url: ${GEMINI_BASE_URL:https://generativelanguage.googleapis.com}
     api-key: ${GEMINI_API_KEY:}
-    model: ${AI_MODEL:gemini-2.5-flash}
+    model: ${AI_MODEL:gemini-3.8-flash}
+    fallback-model: ${AI_FALLBACK_MODEL:gemini-3.7-flash}
     max-tokens: 1024
-    timeout: 30s
+    timeout: ${AI_LLM_TIMEOUT:30s}
 
+  services:
+    menu-url: ${MENU_SERVICE_URL:http://localhost:8082}
+    order-url: ${ORDER_SERVICE_URL:http://localhost:8084}
 
   services:
     menu-url: ${MENU_SERVICE_URL:http://localhost:8082}

@@ -17,6 +17,7 @@ public record AiProperties(
             String baseUrl,
             String apiKey,
             String model,
+            String fallbackModel,
             int maxTokens,
             Duration timeout
     ) {

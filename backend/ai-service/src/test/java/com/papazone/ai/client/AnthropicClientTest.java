@@ -36,21 +36,22 @@ class AnthropicClientTest {
         RestClient restClient = builder.build();
 
         AiProperties properties = new AiProperties(
-                "Asia/Kolkata",
-                new AiProperties.Llm(
-                        "https://generativelanguage.googleapis.com",
-                        "test-gemini-key",
-                        "gemini-2.5-flash",
-                        1024,
-                        Duration.ofSeconds(30)
-                ),
-                new AiProperties.Services(
-                        "http://menu-service:8082",
-                        "http://order-service:8084"
-                ),
-                new AiProperties.Limits(12, 20, 500, 10),
-                new AiProperties.Security("test-jwt-secret", "test-internal-key")
-        );
+        "Asia/Kolkata",
+        new AiProperties.Llm(
+                "https://generativelanguage.googleapis.com",
+                "test-gemini-key",
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                1024,
+                Duration.ofSeconds(30)
+        ),
+        new AiProperties.Services(
+                "http://menu-service:8082",
+                "http://order-service:8084"
+        ),
+        new AiProperties.Limits(12, 20, 500, 10),
+        new AiProperties.Security("test-jwt-secret", "test-internal-key")
+);
 
         client = new AnthropicClient(restClient, properties, mapper);
     }
@@ -77,7 +78,7 @@ class AnthropicClientTest {
                 """;
 
         server.expect(requestTo(
-                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"))
+                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"))
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(header("x-goog-api-key", "test-gemini-key"))
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
@@ -139,7 +140,7 @@ class AnthropicClientTest {
                 """;
 
         server.expect(requestTo(
-                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"))
+                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"))
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(header("x-goog-api-key", "test-gemini-key"))
                 .andRespond(withSuccess(
@@ -203,7 +204,7 @@ class AnthropicClientTest {
 
         // First request: Gemini returns a function call.
         server.expect(requestTo(
-                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"))
+                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"))
                 .andExpect(method(HttpMethod.POST))
                 .andRespond(withSuccess(
                         geminiResponse,
@@ -212,7 +213,7 @@ class AnthropicClientTest {
 
         // Register the second request expectation before sending the first request.
         server.expect(requestTo(
-                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"))
+                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"))
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(jsonPath(
                         "$.contents[0].parts[0].thoughtSignature"
@@ -289,3 +290,4 @@ class AnthropicClientTest {
     }
 
 }
+

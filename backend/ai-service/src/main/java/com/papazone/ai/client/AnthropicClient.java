@@ -11,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
@@ -48,20 +49,88 @@ public class AnthropicClient {
     }
 
     public JsonNode send(ObjectNode body) {
-        if (!props.llm().configured()) {
-            throw new AiException(
-                    503, "The AI assistant is not configured yet.");
+    if (!props.llm().configured()) {
+        throw new AiException(
+                503, "The AI assistant is not configured yet.");
+    }
+
+    ObjectNode geminiRequest = convertRequest(body);
+
+    try {
+        try {
+            return sendWithRetry(
+                    geminiRequest,
+                    props.llm().model(),
+                    3
+            );
+        } catch (RestClientResponseException primaryError) {
+            if (primaryError.getStatusCode().value() != 503
+                    && primaryError.getStatusCode().value() != 429) {
+                throw primaryError;
+            }
+
+            String fallbackModel = props.llm().fallbackModel();
+
+            if (fallbackModel == null
+                    || fallbackModel.isBlank()
+                    || fallbackModel.equals(props.llm().model())) {
+                throw primaryError;
+            }
+
+            log.warn("Primary Gemini model unavailable. Trying fallback model.");
+
+            return sendWithRetry(
+                    geminiRequest,
+                    fallbackModel,
+                    1
+            );
         }
 
-        try {
-            ObjectNode geminiRequest = convertRequest(body);
+    } catch (RestClientResponseException e) {
+        int status = e.getStatusCode().value();
 
+        log.error("Gemini provider error {}: {}",
+                status, abbreviate(e.getResponseBodyAsString()));
+
+        if (status == 429 || status == 503) {
+            throw new AiException(
+                    503,
+                    "The AI assistant is temporarily busy. Please try again shortly.");
+        }
+
+        throw new AiException(
+                502,
+                "The AI assistant is temporarily unavailable.");
+
+    } catch (ResourceAccessException e) {
+        log.error("Gemini provider unreachable or timed out.");
+
+        throw new AiException(
+                504,
+                "The AI assistant took too long to respond. Please try again.");
+
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+
+        throw new AiException(
+                503,
+                "The AI request was interrupted. Please try again.");
+    }
+}
+
+private JsonNode sendWithRetry(
+        ObjectNode request,
+        String model,
+        int maxAttempts
+) throws InterruptedException {
+
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
             JsonNode response = http.post()
-                    .uri("/v1beta/models/{model}:generateContent",
-                            props.llm().model())
+                    .uri("/v1beta/models/{model}:generateContent", model)
                     .contentType(MediaType.APPLICATION_JSON)
                     .header("x-goog-api-key", props.llm().apiKey())
-                    .body(geminiRequest)
+                    .body(request)
                     .retrieve()
                     .body(JsonNode.class);
 
@@ -75,30 +144,50 @@ public class AnthropicClient {
         } catch (RestClientResponseException e) {
             int status = e.getStatusCode().value();
 
-            // Do not log request headers or API keys.
-            log.error("Gemini provider error {}: {}",
-                    status, abbreviate(e.getResponseBodyAsString()));
+            boolean retryable = status == 503 || status == 429;
 
-            if (status == 429 || status == 503) {
-                throw new AiException(
-                        503,
-                        "The AI assistant is busy right now. Please try again shortly.");
+            if (!retryable || attempt == maxAttempts) {
+                throw e;
             }
 
-            throw new AiException(
-                    502,
-                    "The AI assistant is temporarily unavailable.");
+            long delay = getRetryDelay(e, attempt);
 
-        } catch (ResourceAccessException e) {
-            log.error("Gemini provider unreachable or timed out: {}",
-                    e.getMessage());
+            log.warn(
+                    "Gemini returned HTTP {}. Retry attempt {}/{} after {} ms.",
+                    status, attempt, maxAttempts, delay
+            );
 
-            throw new AiException(
-                    504,
-                    "The AI assistant took too long to respond. Please try again.");
+            Thread.sleep(delay);
         }
     }
 
+    throw new IllegalStateException("Gemini retry attempts exhausted.");
+}
+
+private long getRetryDelay(
+        RestClientResponseException exception,
+        int attempt
+) {
+    HttpHeaders headers = exception.getResponseHeaders();
+
+    if (headers != null) {
+        String retryAfter = headers.getFirst("Retry-After");
+
+        if (retryAfter != null) {
+            try {
+                long seconds = Long.parseLong(retryAfter.trim());
+
+                if (seconds >= 0) {
+                    return Math.min(seconds * 1000, 5000);
+                }
+            } catch (NumberFormatException ignored) {
+                // Use exponential backoff when Retry-After is not numeric.
+            }
+        }
+    }
+
+    return Math.min(1000L * (1L << (attempt - 1)), 5000);
+}
     private ObjectNode convertRequest(ObjectNode source) {
         ObjectNode target = mapper.createObjectNode();
 
