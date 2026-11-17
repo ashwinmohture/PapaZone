@@ -96,6 +96,10 @@ jobs:
             dockerfile: backend/delivery-service/Dockerfile
             context: backend
 
+          - image: email-notification-service
+            dockerfile: backend/email-notification-service/Dockerfile
+            context: backend
+
           - image: discovery-server
             dockerfile: backend/discovery-server/Dockerfile
             context: backend
