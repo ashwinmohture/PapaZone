@@ -11,6 +11,7 @@ mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" <<-EOSQL
     GRANT ALL PRIVILEGES ON papazone_orders.* TO 'papazone'@'%';
     GRANT ALL PRIVILEGES ON papazone_payments.* TO 'papazone'@'%';
     GRANT ALL PRIVILEGES ON papazone_deliveries.* TO 'papazone'@'%';
+    GRANT ALL PRIVILEGES ON papazone_notifications.* TO 'papazone'@'%';
 
     FLUSH PRIVILEGES;
 EOSQL

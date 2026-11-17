@@ -14,11 +14,16 @@ import java.util.*;
 public class DeliveryController {
 
     private final DeliveryRepository repo;
-
     private final RestClient http = RestClient.create();
 
     @Value("${ORDER_SERVICE_URL:http://localhost:8084}")
     private String orderUrl;
+
+    @Value("${EMAIL_NOTIFICATION_SERVICE_URL:http://localhost:8089}")
+    private String emailNotificationUrl;
+
+    @Value("${INTERNAL_API_KEY:}")
+    private String internalApiKey;
 
     private static final List<String> DELIVERY_STATUSES = List.of(
             "PLACED",
@@ -142,21 +147,27 @@ public class DeliveryController {
                     ));
         }
 
-        // First update Delivery Service database
+        // Update Delivery Service database
         d.setStatus(requestedStatus);
 
         Delivery savedDelivery = repo.save(d);
 
-        // Synchronize the corresponding Order Service status
+        // Synchronize corresponding Order Service status
         try {
 
             http.patch()
-                    .uri(orderUrl + "/orders/" + d.getOrderId() + "/status")
+                    .uri(orderUrl + "/orders/internal/" + d.getOrderId() + "/status")
+                    .header("X-Internal-Key", internalApiKey)
                     .body(Map.of("status", requestedStatus))
                     .retrieve()
                     .toBodilessEntity();
 
         } catch (Exception e) {
+
+            System.err.println(
+                    "Order status synchronization failed for order "
+                            + d.getOrderId() + ": " + e.getMessage()
+            );
 
             return ResponseEntity.status(502)
                     .body(Map.of(
@@ -167,6 +178,47 @@ public class DeliveryController {
                             "orderId",
                             d.getOrderId()
                     ));
+        }
+
+        // Send email only after successful Order synchronization
+        // and only when delivery status becomes DELIVERED
+        if ("DELIVERED".equals(requestedStatus)) {
+
+            try {
+
+                Map<String, Object> emailRequest = new HashMap<>();
+                emailRequest.put("orderId", d.getOrderId());
+                emailRequest.put("customerId", d.getCustomerId());
+                emailRequest.put("trackingCode", d.getTrackingCode());
+
+                http.post()
+                        .uri(emailNotificationUrl + "/notifications/order-delivered")
+                        .header("X-Internal-Key", internalApiKey)
+                        .body(emailRequest)
+                        .retrieve()
+                        .toBodilessEntity();
+
+                System.out.println(
+                        "Delivery confirmation email successfully requested for order "
+                                + d.getOrderId()
+                );
+
+            } catch (Exception e) {
+
+                System.err.println(
+                        "=========================================="
+                );
+                System.err.println(
+                        "DELIVERY EMAIL NOTIFICATION FAILED"
+                );
+                System.err.println("Order ID: " + d.getOrderId());
+                System.err.println("Customer ID: " + d.getCustomerId());
+                System.err.println("Notification URL: " + emailNotificationUrl);
+                System.err.println("Error: " + e.getMessage());
+                System.err.println(
+                        "=========================================="
+                );
+            }
         }
 
         return ResponseEntity.ok(savedDelivery);

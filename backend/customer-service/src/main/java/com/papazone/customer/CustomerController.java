@@ -3,6 +3,10 @@ package com.papazone.customer;
 
 import java.util.Map;
 import java.util.Objects;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+
+import org.springframework.beans.factory.annotation.Value;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -19,6 +23,9 @@ public class CustomerController {
     private final CustomerRepository repo;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+
+    @Value("${INTERNAL_API_KEY:}")
+    private String internalApiKey;
 
     public CustomerController(
             CustomerRepository repo,
@@ -160,6 +167,37 @@ public class CustomerController {
                                         "message",
                                         "Invalid email or password"
                                 )));
+    }
+
+    // INTERNAL CUSTOMER LOOKUP (for trusted backend services only)
+    @GetMapping("/internal/{id}")
+    public ResponseEntity<?> getInternal(
+            @PathVariable("id") Long id,
+            @RequestHeader(value = "X-Internal-Key", required = false) String suppliedKey) {
+
+        if (internalApiKey == null || internalApiKey.isBlank()
+                || suppliedKey == null || suppliedKey.isBlank()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("message", "Unauthorized internal request"));
+        }
+
+        boolean validKey = MessageDigest.isEqual(
+                internalApiKey.getBytes(StandardCharsets.UTF_8),
+                suppliedKey.getBytes(StandardCharsets.UTF_8));
+
+        if (!validKey) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("message", "Unauthorized internal request"));
+        }
+
+        return repo.findById(id)
+                .<ResponseEntity<?>>map(customer -> ResponseEntity.ok(
+                        Map.of(
+                                "id", customer.getId(),
+                                "name", customer.getName(),
+                                "email", customer.getEmail()
+                        )))
+                .orElse(ResponseEntity.notFound().build());
     }
 
     // GET CUSTOMER DETAILS

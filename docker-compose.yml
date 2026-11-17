@@ -9,7 +9,9 @@ services:
 
   mysql:
     image: mysql:8.0
-    command: ["--default-authentication-plugin=mysql_native_password"]
+    command: [ "--default-authentication-plugin=mysql_native_password" ]
+    ports:
+      - "127.0.0.1:3307:3306"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
       MYSQL_DATABASE_PASSWORD: ${MYSQL_DATABASE_PASSWORD:?MYSQL_DATABASE_PASSWORD is required}
@@ -35,7 +37,13 @@ services:
       - --project=local-project
     ports:
       - "8087:8085"
-
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: papazone-mailpit
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"
+      - "127.0.0.1:1025:1025"
   discovery-server:
     build:
       context: ./backend
@@ -51,6 +59,7 @@ services:
       <<: *commonenv
       JWT_SECRET: ${JWT_SECRET}
       EUREKA_INSTANCE_HOSTNAME: customer-service
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/papazone_customer?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
     depends_on:
       mysql:
@@ -118,6 +127,9 @@ services:
       dockerfile: ./delivery-service/Dockerfile
     environment:
       <<: *commonenv
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      ORDER_SERVICE_URL: http://order-service:8084
+      EMAIL_NOTIFICATION_SERVICE_URL: http://email-notification-service:8089
       EUREKA_INSTANCE_HOSTNAME: delivery-service
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/papazone_deliveries?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
       PUBSUB_ENABLED: "false"
@@ -129,12 +141,39 @@ services:
     ports:
       - "8086:8086"
 
+
+  email-notification-service:
+    build:
+      context: ./backend
+      dockerfile: ./email-notification-service/Dockerfile
+    environment:
+      <<: *commonenv
+      EUREKA_INSTANCE_HOSTNAME: email-notification-service
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      CUSTOMER_SERVICE_URL: http://customer-service:8081
+      SPRING_MAIL_HOST: mailpit
+      SPRING_MAIL_PORT: 1025
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/papazone_notifications?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      MAIL_FROM: noreply@papazone.local
+    depends_on:
+      mysql:
+        condition: service_healthy
+      discovery-server:
+        condition: service_started
+      customer-service:
+        condition: service_started
+      mailpit:
+        condition: service_healthy
+    ports:
+      - "8089:8089"
+
   order-service:
     build:
       context: ./backend
       dockerfile: ./order-service/Dockerfile
     environment:
       <<: *commonenv
+      JWT_SECRET: ${JWT_SECRET}
       EUREKA_INSTANCE_HOSTNAME: order-service
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/papazone_orders?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
       PUBSUB_ENABLED: "false"

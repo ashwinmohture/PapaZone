@@ -4,6 +4,7 @@ import {
     Route,
     Link,
     useNavigate,
+    Navigate,
     useParams
 } from 'react-router-dom';
 
@@ -62,7 +63,13 @@ const demoId = () => Number(localStorage.getItem('customerId') || 1);
 
 // ================= HEADER =================
 
-function Header({ count }) {
+function Header({ count, role }) {
+    const isAdmin =
+        Boolean(localStorage.getItem('token')) &&
+        role === 'ADMIN';
+
+    const isLoggedIn = Boolean(localStorage.getItem('token'));
+
     return (
         <header>
             <Link className="brand" to="/">
@@ -76,8 +83,14 @@ function Header({ count }) {
 
             <nav>
                 <Link to="/">Menu</Link>
-                <Link to="/orders">My Orders</Link>
-                <Link to="/admin">Admin</Link>
+
+                {isLoggedIn && (
+                    <Link to="/orders">My Orders</Link>
+                )}
+
+                {isAdmin && (
+                    <Link to="/admin">Admin</Link>
+                )}
             </nav>
 
             <div className="navright">
@@ -94,11 +107,28 @@ function Header({ count }) {
     );
 }
 
+function AdminRoute() {
+    const token = localStorage.getItem('token');
+    const role = localStorage.getItem('role');
+
+    if (!token) {
+        return <Navigate to="/login" replace />;
+    }
+
+    if (role !== 'ADMIN') {
+        return <Navigate to="/" replace />;
+    }
+
+    return <Admin />;
+}
 
 // ================= MAIN APP =================
 
 function App() {
     const [count, setCount] = useState(0);
+    const [role, setRole] = useState(
+        localStorage.getItem('role') || 'CUSTOMER'
+    );
 
     async function refresh() {
         try {
@@ -115,14 +145,17 @@ function App() {
 
     return (
         <>
-            <Header count={count} />
+            <Header count={count} role={role} />
 
             <Routes>
                 <Route path="/" element={<Menu onAdd={refresh} />} />
 
                 <Route path="/cart" element={<Cart onChange={refresh} />} />
 
-                <Route path="/login" element={<Login />} />
+                <Route
+                    path="/login"
+                    element={<Login onLogin={setRole} />}
+                />
 
                 <Route path="/checkout" element={<Checkout onDone={refresh} />} />
 
@@ -130,7 +163,7 @@ function App() {
 
                 <Route path="/orders/:id" element={<Track />} />
 
-                <Route path="/admin" element={<Admin />} />
+                <Route path="/admin" element={<AdminRoute />} />
             </Routes>
 
             <AiChatWidget onCartChange={refresh} />
@@ -439,7 +472,7 @@ function Cart({ onChange }) {
 
 // ================= LOGIN =================
 
-function Login() {
+function Login({ onLogin }) {
     const [mode, setMode] = useState('login');
 
     const [form, setForm] = useState({
@@ -468,11 +501,14 @@ function Login() {
                     password: form.password
                 });
 
+                const userRole = response.data.role || 'CUSTOMER';
+
                 localStorage.setItem('token', response.data.token);
                 localStorage.setItem('customerId', response.data.customerId);
                 localStorage.setItem('customerName', response.data.name);
-                localStorage.setItem('role', response.data.role || 'CUSTOMER');
+                localStorage.setItem('role', userRole);
 
+                onLogin(userRole);
                 nav('/');
             }
         } catch (error) {
@@ -589,7 +625,6 @@ function Checkout({ onDone }) {
 
         try {
             const response = await api.post('/orders/checkout', {
-                customerId: demoId(),
                 address,
                 paymentMethod: method
             });
@@ -675,7 +710,7 @@ function Orders() {
     const [err, setErr] = useState('');
 
     useEffect(() => {
-        api.get(`/orders/customer/${demoId()}`)
+        api.get('/orders/my-orders')
             .then(response => setOrders(response.data))
             .catch(() => setErr('Unable to load orders.'));
     }, []);

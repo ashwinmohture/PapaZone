@@ -12,6 +12,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.*;
+import jakarta.servlet.http.HttpServletRequest;
+import com.papazone.order.security.AuthenticatedUser;
 
 @RestController
 @RequestMapping("/orders")
@@ -59,23 +61,25 @@ public class OrderController {
 
     // Checkout
     @PostMapping("/checkout")
-    public ResponseEntity<?> checkout(@RequestBody Checkout req) {
+    public ResponseEntity<?> checkout(@RequestBody Checkout req, HttpServletRequest request) {
 
-        if (req.customerId() == null ||
-                req.address() == null ||
-                req.address().isBlank()) {
+        AuthenticatedUser user = currentUser(request);
+        if (user == null) return unauthorized();
+        Long customerId = user.customerId();
+
+        if (req.address() == null || req.address().isBlank()) {
 
             return ResponseEntity.badRequest()
                     .body(Map.of(
                             "message",
-                            "customerId and delivery address are required"
+                            "Delivery address is required"
                     ));
         }
 
         try {
 
             Map cart = http.get()
-                    .uri(cartUrl + "/cart/" + req.customerId())
+                    .uri(cartUrl + "/cart/" + customerId)
                     .retrieve()
                     .body(Map.class);
 
@@ -92,7 +96,7 @@ public class OrderController {
 
             OrderEntity o = new OrderEntity();
 
-            o.setCustomerId(req.customerId());
+            o.setCustomerId(customerId);
             // Store real JSON (was List.toString(), which is not parseable JSON).
             o.setItemsJson(JSON.writeValueAsString(items));
             o.setSubtotal(subtotal);
@@ -150,7 +154,7 @@ public class OrderController {
 
             try {
                 http.delete()
-                        .uri(cartUrl + "/cart/" + req.customerId())
+                        .uri(cartUrl + "/cart/" + customerId)
                         .retrieve()
                         .toBodilessEntity();
 
@@ -215,30 +219,93 @@ public class OrderController {
         }
     }
 
-    // Get Order by ID
-//    @GetMapping("/{id}")
+    // Customers may only read their own order; admins may read any order.
     @GetMapping("/{id:\\d+}")
-    public ResponseEntity<?> get(
-            @PathVariable("id") Long id) {
-
-        return repo.findById(id)
-                .<ResponseEntity<?>>map(ResponseEntity::ok)
+    public ResponseEntity<?> get(@PathVariable("id") Long id, HttpServletRequest request) {
+        AuthenticatedUser user = currentUser(request);
+        if (user == null) return unauthorized();
+        Optional<OrderEntity> order = user.isAdmin() ? repo.findById(id)
+                : repo.findByIdAndCustomerId(id, user.customerId());
+        return order.<ResponseEntity<?>>map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    // Get Orders by Customer ID
+    // Legacy URL retained for compatibility, but customer identity comes from JWT.
     @GetMapping("/customer/{id}")
-    public List<OrderEntity> byCustomer(
-            @PathVariable("id") Long id) {
+    public ResponseEntity<?> byCustomer(@PathVariable("id") Long id, HttpServletRequest request) {
+        AuthenticatedUser user = currentUser(request);
+        if (user == null) return unauthorized();
+        if (!user.isAdmin() && !user.customerId().equals(id)) {
+            return ResponseEntity.status(403).body(Map.of("message", "You cannot access another customer's orders"));
+        }
+        return ResponseEntity.ok(repo.findByCustomerIdOrderByCreatedAtDesc(id));
+    }
 
-        return repo.findByCustomerIdOrderByCreatedAtDesc(id);
+    @GetMapping("/my-orders")
+    public ResponseEntity<?> myOrders(HttpServletRequest request) {
+        AuthenticatedUser user = currentUser(request);
+        if (user == null) return unauthorized();
+        return ResponseEntity.ok(repo.findByCustomerIdOrderByCreatedAtDesc(user.customerId()));
+    }
+
+
+    // Internal status update for Delivery Service.
+// Requires X-Internal-Key instead of a customer/admin JWT.
+    @PatchMapping("/internal/{id}/status")
+    public ResponseEntity<?> updateStatusInternal(
+            @PathVariable("id") Long id,
+            @RequestHeader(value = "X-Internal-Key", required = false) String key,
+            @RequestBody Map<String, String> body) {
+
+        if (internalKey == null || internalKey.isBlank()
+                || key == null
+                || !MessageDigest.isEqual(
+                internalKey.getBytes(StandardCharsets.UTF_8),
+                key.getBytes(StandardCharsets.UTF_8))) {
+
+            return ResponseEntity.status(403)
+                    .body(Map.of("message", "Forbidden"));
+        }
+
+        String requestedStatus = body.get("status");
+
+        if (requestedStatus == null || requestedStatus.isBlank()) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("message", "Status is required"));
+        }
+
+        requestedStatus = requestedStatus.trim().toUpperCase();
+
+        if (!DELIVERY_STATUSES.contains(requestedStatus)) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("message", "Invalid delivery status"));
+        }
+
+        final String finalStatus = requestedStatus;
+
+        return repo.findById(id)
+                .map(order -> {
+                    if ("CANCELLED".equalsIgnoreCase(order.getStatus())) {
+                        return ResponseEntity.badRequest()
+                                .body(Map.of("message", "Cancelled order cannot be updated"));
+                    }
+
+                    order.setStatus(finalStatus);
+                    return ResponseEntity.ok(repo.save(order));
+                })
+                .orElse(ResponseEntity.notFound().build());
     }
 
     // Update Order Status
     @PatchMapping("/{id}/status")
     public ResponseEntity<?> status(
             @PathVariable("id") Long id,
-            @RequestBody Map<String, String> b) {
+            @RequestBody Map<String, String> b,
+            HttpServletRequest request) {
+
+        AuthenticatedUser user = currentUser(request);
+        if (user == null) return unauthorized();
+        if (!user.isAdmin()) return ResponseEntity.status(403).body(Map.of("message", "Admin access required"));
 
         return repo.findById(id)
                 .map(o -> {
@@ -305,7 +372,10 @@ public class OrderController {
 
     // Get All Orders for Admin Dashboard
     @GetMapping
-    public List<OrderEntity> getAllOrders() {
+    public ResponseEntity<?> getAllOrders(HttpServletRequest request) {
+        AuthenticatedUser user = currentUser(request);
+        if (user == null) return unauthorized();
+        if (!user.isAdmin()) return ResponseEntity.status(403).body(Map.of("message", "Admin access required"));
 
         List<OrderEntity> orders =
                 repo.findAllByOrderByCreatedAtDesc();
@@ -314,6 +384,14 @@ public class OrderController {
             synchronizeDeliveryStatus(order);
         }
 
-        return orders;
+        return ResponseEntity.ok(orders);
+    }
+
+    private AuthenticatedUser currentUser(HttpServletRequest request) {
+        return (AuthenticatedUser) request.getAttribute(AuthenticatedUser.class.getName());
+    }
+
+    private ResponseEntity<?> unauthorized() {
+        return ResponseEntity.status(401).body(Map.of("message", "Authentication required"));
     }
 }

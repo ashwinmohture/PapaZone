@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.List;
 
 public interface OrderRepository extends JpaRepository<OrderEntity, Long> {
+    java.util.Optional<OrderEntity> findByIdAndCustomerId(Long id, Long customerId);
 
     // Get orders for a specific customer
     List<OrderEntity> findByCustomerIdOrderByCreatedAtDesc(Long id);
