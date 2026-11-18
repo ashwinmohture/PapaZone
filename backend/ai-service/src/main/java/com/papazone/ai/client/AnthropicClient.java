@@ -12,8 +12,8 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 
 import java.util.Iterator;
@@ -64,18 +64,18 @@ public class AnthropicClient {
                         props.llm().model(),
                         3
                 );
+
             } catch (RestClientResponseException primaryError) {
+                // Provider answered with an HTTP error status.
                 int status = primaryError.getStatusCode().value();
 
                 if (status != 503 && status != 429) {
                     throw primaryError;
                 }
 
-                String fallbackModel = props.llm().fallbackModel();
+                String fallbackModel = usableFallbackModel();
 
-                if (fallbackModel == null
-                        || fallbackModel.isBlank()
-                        || fallbackModel.equals(props.llm().model())) {
+                if (fallbackModel == null) {
                     throw primaryError;
                 }
 
@@ -85,8 +85,27 @@ public class AnthropicClient {
                         fallbackModel
                 );
 
-                return sendWithRetry(geminiRequest, fallbackModel, 1);
+                return sendWithRetry(geminiRequest, fallbackModel, 2);
+
+            } catch (RestClientException primaryError) {
+                // No usable HTTP response: read timeout, connection problem,
+                // or an unreadable body. (Must stay AFTER the
+                // RestClientResponseException catch, which is a subclass.)
+                String fallbackModel = usableFallbackModel();
+
+                if (fallbackModel == null) {
+                    throw primaryError;
+                }
+
+                log.warn(
+                        "Primary Gemini model failed ({}). Trying fallback model '{}'.",
+                        rootMessage(primaryError),
+                        fallbackModel
+                );
+
+                return sendWithRetry(geminiRequest, fallbackModel, 2);
             }
+
         } catch (RestClientResponseException e) {
             int status = e.getStatusCode().value();
 
@@ -107,10 +126,13 @@ public class AnthropicClient {
                     502,
                     "The AI assistant is temporarily unavailable."
             );
-        } catch (ResourceAccessException e) {
+
+        } catch (RestClientException e) {
+            // Includes ResourceAccessException (timeouts / unreachable) and
+            // any other client-side failure, so none of them become a 500.
             log.error(
-                    "Gemini provider is unreachable or timed out: {}",
-                    e.getMessage(),
+                    "Gemini call failed or timed out: {}",
+                    rootMessage(e),
                     e
             );
 
@@ -118,6 +140,7 @@ public class AnthropicClient {
                     504,
                     "The AI assistant took too long to respond. Please try again."
             );
+
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
 
@@ -126,6 +149,19 @@ public class AnthropicClient {
                     "The AI request was interrupted. Please try again."
             );
         }
+    }
+
+    /** Fallback model name, or null if none is configured / same as primary. */
+    private String usableFallbackModel() {
+        String fallback = props.llm().fallbackModel();
+
+        if (fallback == null
+                || fallback.isBlank()
+                || fallback.equals(props.llm().model())) {
+            return null;
+        }
+
+        return fallback;
     }
 
     private JsonNode sendWithRetry(
@@ -249,6 +285,8 @@ public class AnthropicClient {
                 continue;
             }
 
+            boolean firstCallInMessage = true;
+
             for (JsonNode block : content) {
                 String type = block.path("type").asText();
 
@@ -285,7 +323,16 @@ public class AnthropicClient {
                                 "thoughtSignature",
                                 thoughtSignature.asText()
                         );
+                    } else if (firstCallInMessage) {
+                        // Gemini 3 rejects a replayed functionCall that has no
+                        // signature (HTTP 400). Some models (e.g. lite) don't
+                        // return one, so use Google's documented placeholder.
+                        functionCallPart.put(
+                                "thoughtSignature",
+                                "skip_thought_signature_validator"
+                        );
                     }
+                    firstCallInMessage = false;
 
                 } else if ("tool_result".equals(type)) {
                     ObjectNode functionResponse =
@@ -520,6 +567,17 @@ public class AnthropicClient {
         );
 
         return result;
+    }
+
+    /** Message of the deepest cause, e.g. "java.net.SocketTimeoutException: Read timed out". */
+    private static String rootMessage(Throwable t) {
+        Throwable root = t;
+
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+
+        return root.toString();
     }
 
     private static String abbreviate(String value) {
