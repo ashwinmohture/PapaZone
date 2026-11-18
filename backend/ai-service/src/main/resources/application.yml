@@ -20,10 +20,6 @@ ai:
     menu-url: ${MENU_SERVICE_URL:http://localhost:8082}
     order-url: ${ORDER_SERVICE_URL:http://localhost:8084}
 
-  services:
-    menu-url: ${MENU_SERVICE_URL:http://localhost:8082}
-    order-url: ${ORDER_SERVICE_URL:http://localhost:8084}
-
   limits:
     chat-per-minute: 12
     admin-per-minute: 20
