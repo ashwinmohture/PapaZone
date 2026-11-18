@@ -18,7 +18,11 @@ import org.springframework.stereotype.Service;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.ZoneId;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Feature 6 - AI admin assistant.
@@ -60,51 +64,95 @@ public class AdminAssistantService {
 
     public AdminDtos.Response ask(String question) {
         String q = question == null ? "" : question.trim();
+
         if (q.isEmpty()) {
             throw new AiException(400, "Please type a question.");
         }
+
         if (q.length() > props.limits().maxMessageChars()) {
             q = q.substring(0, props.limits().maxMessageChars());
         }
 
         List<MenuEntry> menu = menuClient.allItems();
-        Set<String> categories = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-        for (MenuEntry m : menu) {
-            if (m.category() != null && !m.category().isBlank()) categories.add(m.category());
+
+        Set<String> categories =
+                new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+
+        for (MenuEntry menuEntry : menu) {
+            if (menuEntry.category() != null
+                    && !menuEntry.category().isBlank()) {
+                categories.add(menuEntry.category());
+            }
         }
 
         AnalyticsEngine engine = new AnalyticsEngine(clock, zone);
 
         ObjectNode body = llm.newRequest(
-                AdminLogic.systemPrompt(LocalDate.now(clock.withZone(zone)), zone, categories));
-        body.putArray("tools").add(AdminLogic.toolDefinition(categories));
+                AdminLogic.systemPrompt(
+                        LocalDate.now(clock.withZone(zone)),
+                        zone,
+                        categories
+                )
+        );
+
+        body.putArray("tools")
+                .add(AdminLogic.toolDefinition(categories));
 
         ArrayNode messages = body.putArray("messages");
-        messages.addObject().put("role", "user").put("content", q);
+        messages.addObject()
+                .put("role", "user")
+                .put("content", q);
 
         List<Map<String, Object>> results = new ArrayList<>();
 
         for (int round = 0; round < MAX_ROUNDS; round++) {
             JsonNode response = llm.send(body);
 
-            if (!"tool_use".equals(response.path("stop_reason").asText())) {
+            if (!"tool_use".equals(
+                    response.path("stop_reason").asText()
+            )) {
                 String text = LlmJson.text(response);
+
                 return new AdminDtos.Response(
-                        text.isBlank() ? "I could not produce an answer for that question." : text,
-                        results);
+                        text.isBlank()
+                                ? "I could not produce an answer for that question."
+                                : text,
+                        results
+                );
             }
 
-            // Echo the assistant turn, then answer every tool call in ONE user turn.
-            messages.addObject().put("role", "assistant").set("content", response.get("content"));
+            // Echo the complete assistant tool-call blocks. This retains
+            // Gemini's original call ID and thought signature.
+            messages.addObject()
+                    .put("role", "assistant")
+                    .set("content", response.get("content"));
 
+            // Gemini expects all function responses for this assistant turn
+            // together in one following user message.
             ArrayNode toolResults = mapper.createArrayNode();
-            for (JsonNode block : response.path("content")) {
-                if (!"tool_use".equals(block.path("type").asText())) continue;
 
-                AdminLogic.Outcome outcome = AdminLogic.TOOL.equals(block.path("name").asText())
-                        ? AdminLogic.runTool(block.path("input"), engine,
-                        range -> orderClient.export(range.from(), range.to()), menu)
-                        : new AdminLogic.Outcome(true, Map.of("error", "Unknown tool"));
+            for (JsonNode block : response.path("content")) {
+                if (!"tool_use".equals(block.path("type").asText())) {
+                    continue;
+                }
+
+                String toolName = block.path("name").asText();
+
+                AdminLogic.Outcome outcome =
+                        AdminLogic.TOOL.equals(toolName)
+                                ? AdminLogic.runTool(
+                                        block.path("input"),
+                                        engine,
+                                        range -> orderClient.export(
+                                                range.from(),
+                                                range.to()
+                                        ),
+                                        menu
+                                )
+                                : new AdminLogic.Outcome(
+                                        true,
+                                        Map.of("error", "Unknown tool")
+                                );
 
                 if (!outcome.error()) {
                     results.add(outcome.result());
@@ -112,16 +160,46 @@ public class AdminAssistantService {
 
                 ObjectNode toolResult = toolResults.addObject();
                 toolResult.put("type", "tool_result");
-                toolResult.put("tool_use_id", block.path("id").asText());
+
+                // Keep the function name separate from the internal ID.
+                toolResult.put("name", toolName);
+
+                // Internal ID is used to match the result with this tool call
+                // in the assistant conversation.
+                toolResult.put(
+                        "tool_use_id",
+                        block.path("id").asText()
+                );
+
+                // Forward Gemini's provider ID only if it was present in
+                // the original functionCall. AnthropicClient will use it
+                // for Gemini functionResponse.id.
+                JsonNode geminiCallId = block.path("gemini_call_id");
+
+                if (geminiCallId.isTextual()
+                        && !geminiCallId.asText().isBlank()) {
+                    toolResult.set(
+                            "gemini_call_id",
+                            geminiCallId.deepCopy()
+                    );
+                }
+
                 toolResult.put("content", toJson(outcome.result()));
+
                 if (outcome.error()) {
                     toolResult.put("is_error", true);
                 }
             }
-            messages.addObject().put("role", "user").set("content", toolResults);
+
+            messages.addObject()
+                    .put("role", "user")
+                    .set("content", toolResults);
         }
 
-        throw new AiException(502, "The assistant could not finish the analysis. Try a simpler question.");
+        throw new AiException(
+                502,
+                "The assistant could not finish the analysis. Try a simpler question."
+        );
     }
 
     private String toJson(Object value) {
