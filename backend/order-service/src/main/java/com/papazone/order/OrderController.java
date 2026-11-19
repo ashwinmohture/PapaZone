@@ -4,6 +4,7 @@ package com.papazone.order;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestClient;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,6 +23,7 @@ public class OrderController {
 
     private final OrderRepository repo;
     private final OrderEventPublisher events;
+    private final PaymentConfirmationService confirmation;
     private final RestClient http = RestClient.create();
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -38,6 +40,19 @@ public class OrderController {
     @Value("${DELIVERY_SERVICE_URL:http://localhost:8086}")
     String deliveryUrl;
 
+    // Free payment method (promo / demo orders). Can be switched off without a code change.
+    @Value("${FREE_PAYMENT_ENABLED:true}")
+    boolean freePaymentEnabled;
+
+    // Optional cap for FREE orders (order total in INR). 0 = no cap.
+    @Value("${FREE_PAYMENT_MAX_AMOUNT:0}")
+    double freePaymentMaxAmount;
+
+    // Order status while waiting for the customer to pay through Razorpay.
+    private static final String PAYMENT_PENDING = PaymentConfirmationService.PAYMENT_PENDING;
+
+    private static final Set<String> PAYMENT_METHODS = Set.of("COD", "CARD", "UPI", "FREE", "RAZORPAY");
+
     private static final List<String> DELIVERY_STATUSES = List.of(
             "PLACED",
             "PREPARING",
@@ -48,9 +63,11 @@ public class OrderController {
 
     public OrderController(
             OrderRepository r,
-            OrderEventPublisher events) {
+            OrderEventPublisher events,
+            PaymentConfirmationService confirmation) {
         repo = r;
         this.events = events;
+        this.confirmation = confirmation;
     }
 
     public record Checkout(
@@ -74,6 +91,21 @@ public class OrderController {
                             "message",
                             "Delivery address is required"
                     ));
+        }
+
+        // Normalise + validate payment method (null/blank keeps the old default: COD).
+        String method = (req.paymentMethod() == null || req.paymentMethod().isBlank())
+                ? "COD"
+                : req.paymentMethod().trim().toUpperCase();
+
+        if (!PAYMENT_METHODS.contains(method)) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("message", "Unsupported payment method"));
+        }
+
+        if ("FREE".equals(method) && !freePaymentEnabled) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("message", "Free payment is not available right now"));
         }
 
         try {
@@ -108,8 +140,48 @@ public class OrderController {
                             o.getTax()
             );
             o.setAddress(req.address());
+            o.setPaymentMethod(method);
+
+            // COD is collected on delivery; CARD / UPI (simulated) and FREE are settled immediately;
+            // RAZORPAY stays PENDING until the payment is verified.
+            o.setPaymentStatus(switch (method) {
+                case "CARD", "UPI", "FREE" -> "PAID";
+                default -> "PENDING";
+            });
+
+            if ("FREE".equals(method)) {
+                if (freePaymentMaxAmount > 0 && o.getTotal() > freePaymentMaxAmount) {
+                    return ResponseEntity.badRequest()
+                            .body(Map.of("message",
+                                    "Free payment is only available for orders up to Rs. "
+                                            + freePaymentMaxAmount));
+                }
+                // Nothing to collect, so the order is already settled.
+                o.setPaymentStatus("PAID");
+            }
 
             o = repo.save(o);
+
+            // Real gateway: the order is only confirmed after the payment is verified.
+            if ("RAZORPAY".equals(method)) {
+                o.setStatus(PAYMENT_PENDING);
+                o.setPaymentStatus("PENDING");
+                o = repo.save(o);
+
+                Map<String, Object> details = createRazorpayOrder(o);
+                if (details == null) {
+                    repo.delete(o);
+                    return ResponseEntity.status(502)
+                            .body(Map.of("message", "Could not start the online payment. Please try again."));
+                }
+
+                Map<String, Object> out = new LinkedHashMap<>();
+                out.put("id", o.getId());
+                out.put("status", o.getStatus());
+                out.put("total", o.getTotal());
+                out.put("razorpay", details);
+                return ResponseEntity.status(201).body(out);
+            }
 
             events.publish(
                     "{\"eventType\":\"order.created\",\"orderId\":" +
@@ -123,14 +195,13 @@ public class OrderController {
             Map<String, Object> pay = Map.of(
                     "orderId", o.getId(),
                     "amount", o.getTotal(),
-                    "method", req.paymentMethod() == null
-                            ? "COD"
-                            : req.paymentMethod()
+                    "method", method
             );
 
             try {
                 http.post()
                         .uri(paymentUrl + "/payments")
+                        .header("X-Internal-Key", internalKey)
                         .body(pay)
                         .retrieve()
                         .toBodilessEntity();
@@ -173,6 +244,144 @@ public class OrderController {
         }
     }
 
+    // Retry / resume an unpaid Razorpay order (e.g. the customer closed the payment window).
+    @PostMapping("/{id:\\d+}/payment/razorpay")
+    public ResponseEntity<?> retryRazorpay(@PathVariable("id") Long id, HttpServletRequest request) {
+        AuthenticatedUser user = currentUser(request);
+        if (user == null) return unauthorized();
+
+        Optional<OrderEntity> found = repo.findByIdAndCustomerId(id, user.customerId());
+        if (found.isEmpty()) return ResponseEntity.notFound().build();
+
+        OrderEntity o = found.get();
+        if (!PAYMENT_PENDING.equals(o.getStatus())) {
+            return ResponseEntity.badRequest().body(Map.of("message", "This order is not awaiting payment"));
+        }
+
+        Map<String, Object> details = createRazorpayOrder(o);
+        if (details == null) {
+            return ResponseEntity.status(502).body(Map.of("message", "Could not start the online payment"));
+        }
+        return ResponseEntity.ok(Map.of("id", o.getId(), "razorpay", details));
+    }
+
+    // Called by the browser after Razorpay Checkout succeeds. The signature is verified server-side.
+    @PostMapping("/{id:\\d+}/payment/verify")
+    public ResponseEntity<?> verifyRazorpay(
+            @PathVariable("id") Long id,
+            @RequestBody Map<String, String> body,
+            HttpServletRequest request) {
+
+        AuthenticatedUser user = currentUser(request);
+        if (user == null) return unauthorized();
+
+        Optional<OrderEntity> found = repo.findByIdAndCustomerId(id, user.customerId());
+        if (found.isEmpty()) return ResponseEntity.notFound().build();
+
+        OrderEntity o = found.get();
+
+        // Idempotent: already confirmed.
+        if ("PAID".equals(o.getPaymentStatus())) return ResponseEntity.ok(o);
+
+        if (!PAYMENT_PENDING.equals(o.getStatus())) {
+            return ResponseEntity.badRequest().body(Map.of("message", "This order is not awaiting payment"));
+        }
+
+        Map<String, Object> verifyReq = new HashMap<>();
+        verifyReq.put("orderId", o.getId());
+        verifyReq.put("razorpay_order_id", body.get("razorpay_order_id"));
+        verifyReq.put("razorpay_payment_id", body.get("razorpay_payment_id"));
+        verifyReq.put("razorpay_signature", body.get("razorpay_signature"));
+
+        try {
+            http.post()
+                    .uri(paymentUrl + "/payments/razorpay/verify")
+                    .header("X-Internal-Key", internalKey)
+                    .body(verifyReq)
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (Exception e) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("message", "Payment verification failed. If money was deducted it will be refunded."));
+        }
+
+        return ResponseEntity.ok(confirmation.confirmPaid(o.getId()));
+    }
+
+    // Called by payment-service when the Razorpay webhook confirms a payment
+    // (covers customers who paid but closed the browser before /payment/verify ran).
+    @PostMapping("/internal/{id}/payment-confirmed")
+    public ResponseEntity<?> paymentConfirmedInternal(
+            @PathVariable("id") Long id,
+            @RequestHeader(value = "X-Internal-Key", required = false) String key) {
+
+        if (internalKey == null || internalKey.isBlank() || key == null
+                || !MessageDigest.isEqual(
+                internalKey.getBytes(StandardCharsets.UTF_8),
+                key.getBytes(StandardCharsets.UTF_8))) {
+            return ResponseEntity.status(403).body(Map.of("message", "Forbidden"));
+        }
+
+        OrderEntity o = confirmation.confirmPaid(id);
+        return o == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(Map.of("status", o.getStatus()));
+    }
+
+    // Asks payment-service to create (or re-use) the Razorpay order. Returns null on failure.
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> createRazorpayOrder(OrderEntity o) {
+        try {
+            return http.post()
+                    .uri(paymentUrl + "/payments/razorpay/order")
+                    .header("X-Internal-Key", internalKey)
+                    .body(Map.of("orderId", o.getId(), "amount", o.getTotal()))
+                    .retrieve()
+                    .body(Map.class);
+        } catch (Exception e) {
+            System.err.println("Razorpay order creation failed for order #" + o.getId() + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    // Admin refund: Razorpay payments are refunded through the gateway; the order is then cancelled
+    // (unless it was already delivered) and its payment status becomes REFUNDED.
+    @PostMapping("/{id:\\d+}/refund")
+    public ResponseEntity<?> refund(@PathVariable("id") Long id, HttpServletRequest request) {
+        AuthenticatedUser user = currentUser(request);
+        if (user == null) return unauthorized();
+        if (!user.isAdmin()) return ResponseEntity.status(403).body(Map.of("message", "Admin access required"));
+
+        Optional<OrderEntity> found = repo.findById(id);
+        if (found.isEmpty()) return ResponseEntity.notFound().build();
+        OrderEntity o = found.get();
+
+        try {
+            http.post()
+                    .uri(paymentUrl + "/payments/order/" + id + "/refund")
+                    .header("X-Internal-Key", internalKey)
+                    .retrieve()
+                    .toBodilessEntity();
+
+        } catch (RestClientResponseException e) {
+            String message = "Refund failed";
+            try {
+                message = JSON.readTree(e.getResponseBodyAsString()).path("message").asText(message);
+            } catch (Exception ignored) {
+            }
+            int status = e.getStatusCode().value();
+            return ResponseEntity.status(status >= 400 && status < 600 ? status : 502)
+                    .body(Map.of("message", message));
+
+        } catch (Exception e) {
+            return ResponseEntity.status(502).body(Map.of("message", "Payment service unavailable"));
+        }
+
+        o.setPaymentStatus("REFUNDED");
+        if (!"DELIVERED".equalsIgnoreCase(o.getStatus())) {
+            o.setStatus("CANCELLED");
+        }
+        return ResponseEntity.ok(repo.save(o));
+    }
+
     // Minimal order view for internal analytics: no address, no payment data.
     public record OrderExport(
             Long id,
@@ -205,6 +414,7 @@ public class OrderController {
                     .findByCreatedAtGreaterThanEqualAndCreatedAtLessThan(
                             Instant.parse(from), Instant.parse(to))
                     .stream()
+                    .filter(o -> !PAYMENT_PENDING.equals(o.getStatus()))
                     .map(o -> new OrderExport(
                             o.getId(), o.getCustomerId(), o.getCreatedAt(),
                             o.getStatus(), o.getSubtotal(), o.getTotal(),
@@ -377,8 +587,10 @@ public class OrderController {
         if (user == null) return unauthorized();
         if (!user.isAdmin()) return ResponseEntity.status(403).body(Map.of("message", "Admin access required"));
 
-        List<OrderEntity> orders =
-                repo.findAllByOrderByCreatedAtDesc();
+        // Unpaid online-payment orders are not real orders yet.
+        List<OrderEntity> orders = repo.findAllByOrderByCreatedAtDesc().stream()
+                .filter(o -> !PAYMENT_PENDING.equals(o.getStatus()))
+                .toList();
 
         for (OrderEntity order : orders) {
             synchronizeDeliveryStatus(order);

@@ -31,6 +31,9 @@ public class OrderEntity {
 
     private String paymentStatus = "PENDING";
 
+    // COD, CARD, UPI, FREE or RAZORPAY (null for orders created before this field existed)
+    private String paymentMethod;
+
     private Instant createdAt = Instant.now();
 
     // Getters and Setters
@@ -109,6 +112,14 @@ public class OrderEntity {
 
     public void setPaymentStatus(String v) {
         paymentStatus = v;
+    }
+
+    public String getPaymentMethod() {
+        return paymentMethod;
+    }
+
+    public void setPaymentMethod(String v) {
+        paymentMethod = v;
     }
 
     public Instant getCreatedAt() {

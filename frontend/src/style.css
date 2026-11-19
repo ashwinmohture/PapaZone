@@ -719,3 +719,24 @@ button {
     }
 }
 
+/* Admin refund button */
+.refund-btn {
+    margin-top: 8px;
+    padding: 8px 14px;
+    border: 1px solid #c8202d;
+    border-radius: 10px;
+    background: #fff;
+    color: #c8202d;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.refund-btn:hover:not(:disabled) {
+    background: #c8202d;
+    color: #fff;
+}
+
+.refund-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}

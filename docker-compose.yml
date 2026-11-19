@@ -7,6 +7,24 @@ x-common-env: &commonenv
 
 services:
 
+  vector-db:
+    image: pgvector/pgvector:pg17
+    container_name: papazone-vector-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: papazone_vector
+      POSTGRES_USER: papazone
+      POSTGRES_PASSWORD: ${RAG_DB_PASSWORD:-papazone_vector_local}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - vector_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U papazone -d papazone_vector"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   mysql:
     image: mysql:8.0
     command: [ "--default-authentication-plugin=mysql_native_password" ]
@@ -112,6 +130,11 @@ services:
     environment:
       <<: *commonenv
       EUREKA_INSTANCE_HOSTNAME: payment-service
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      ORDER_SERVICE_URL: http://order-service:8084
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/papazone_payments?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
     depends_on:
       mysql:
@@ -181,6 +204,9 @@ services:
       PAYMENT_SERVICE_URL: http://payment-service:8085
       DELIVERY_SERVICE_URL: http://delivery-service:8086
       INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      FREE_PAYMENT_ENABLED: ${FREE_PAYMENT_ENABLED:-true}
+      FREE_PAYMENT_MAX_AMOUNT: ${FREE_PAYMENT_MAX_AMOUNT:-0}
+      UNPAID_ORDER_TTL_MINUTES: ${UNPAID_ORDER_TTL_MINUTES:-60}
       JAVA_TOOL_OPTIONS: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
     depends_on:
       mysql:
@@ -211,7 +237,15 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY}
       GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com}
+      RAG_ENABLED: ${RAG_ENABLED:-true}
+      RAG_DB_URL: jdbc:postgresql://vector-db:5432/papazone_vector
+      RAG_DB_USERNAME: papazone
+      RAG_DB_PASSWORD: ${RAG_DB_PASSWORD:-papazone_vector_local}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-gemini-embedding-001}
+      RAG_EMBEDDING_DIMENSIONS: ${RAG_EMBEDDING_DIMENSIONS:-768}
     depends_on:
+      vector-db:
+        condition: service_healthy
       discovery-server:
         condition: service_started
       menu-service:
@@ -251,3 +285,4 @@ services:
 
 volumes:
   mysqldata:
+  vector_data:

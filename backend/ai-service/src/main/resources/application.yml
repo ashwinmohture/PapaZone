@@ -1,9 +1,21 @@
+
 server:
-  port: 8088   # 8087 is used on the host by the Pub/Sub emulator
+  port: 8088 # 8087 is used on the host by the Pub/Sub emulator
 
 spring:
   application:
     name: ai-service
+
+  ai:
+    google:
+      genai:
+        embedding:
+          api-key: ${GEMINI_API_KEY:}
+          text:
+            options:
+              model: ${RAG_EMBEDDING_MODEL:gemini-embedding-001}
+              dimensions: ${RAG_EMBEDDING_DIMENSIONS:768}
+              task-type: RETRIEVAL_DOCUMENT
 
 ai:
   timezone: ${AI_TIMEZONE:Asia/Kolkata}
@@ -30,6 +42,7 @@ ai:
     # Same JWT_SECRET (base64) as customer-service. Used only to VERIFY tokens.
     # Blank = everyone is anonymous and the admin assistant is disabled.
     jwt-secret: ${JWT_SECRET:}
+
     # Shared secret for order-service /orders/export. Must match order-service.
     internal-key: ${INTERNAL_API_KEY:}
 
@@ -37,6 +50,20 @@ eureka:
   instance:
     prefer-ip-address: false
     hostname: ${EUREKA_INSTANCE_HOSTNAME:localhost}
+
   client:
     service-url:
       defaultZone: ${EUREKA_CLIENT_SERVICEURL_DEFAULTZONE:http://localhost:8761/eureka}
+
+# RAG configuration. This datasource is separate from the existing MySQL services.
+rag:
+  enabled: ${RAG_ENABLED:true}
+
+  datasource:
+    url: ${RAG_DB_URL:jdbc:postgresql://localhost:5433/papazone_vector}
+    username: ${RAG_DB_USERNAME:papazone}
+    password: ${RAG_DB_PASSWORD:papazone_vector_local}
+    driver-class-name: org.postgresql.Driver
+
+  embedding-dimensions: ${RAG_EMBEDDING_DIMENSIONS:768}
+  top-k: ${RAG_TOP_K:5}

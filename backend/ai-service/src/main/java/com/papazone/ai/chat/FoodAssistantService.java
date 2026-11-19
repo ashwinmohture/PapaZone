@@ -9,8 +9,10 @@ import com.papazone.ai.client.MenuClient;
 import com.papazone.ai.config.AiProperties;
 import com.papazone.ai.model.MenuEntry;
 import com.papazone.ai.recommend.RecommendationService;
+import com.papazone.ai.rag.RagMenuService;
 import com.papazone.ai.web.AiException;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.util.List;
 
@@ -28,17 +30,20 @@ public class FoodAssistantService {
     private final MenuClient menuClient;
     private final RecommendationService recommendations;
     private final AiProperties props;
+    private final ObjectProvider<RagMenuService> ragMenuService;
 
     public FoodAssistantService(
             AnthropicClient llm,
             MenuClient menuClient,
             RecommendationService recommendations,
-            AiProperties props
+            AiProperties props,
+            ObjectProvider<RagMenuService> ragMenuService
     ) {
         this.llm = llm;
         this.menuClient = menuClient;
         this.recommendations = recommendations;
         this.props = props;
+        this.ragMenuService = ragMenuService;
     }
 
     /** customerId comes from the verified JWT (null for visitors). */
@@ -60,7 +65,19 @@ public class FoodAssistantService {
 
         List<String> previouslyOrdered = recommendations.topOrderedNames(customerId, 5);
 
-        ObjectNode body = llm.newRequest(ChatLogic.systemPrompt(menu, previouslyOrdered));
+        String latestQuestion = history.stream()
+                .filter(message -> "user".equals(message.role()))
+                .reduce((first, second) -> second)
+                .map(ChatDtos.Message::content)
+                .orElse("");
+        RagMenuService rag = ragMenuService.getIfAvailable();
+        String ragContext = latestQuestion.isBlank() || rag == null ? "" : rag.context(latestQuestion);
+        String systemPrompt = ChatLogic.systemPrompt(menu, previouslyOrdered);
+        if (!ragContext.isBlank()) {
+            systemPrompt += "\n\nSemantically retrieved menu context (RAG):\n" + ragContext
+                    + "\nUse this as additional relevance context, but use the live menu list above for current prices and availability.";
+        }
+        ObjectNode body = llm.newRequest(systemPrompt);
 
         ArrayNode messages = body.putArray("messages");
         for (ChatDtos.Message m : history) {

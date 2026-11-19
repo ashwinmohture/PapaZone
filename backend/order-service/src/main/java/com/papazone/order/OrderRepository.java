@@ -14,6 +14,9 @@ public interface OrderRepository extends JpaRepository<OrderEntity, Long> {
     // Orders created in [from, to) - used by the internal export
     List<OrderEntity> findByCreatedAtGreaterThanEqualAndCreatedAtLessThan(Instant from, Instant to);
 
+    // Unpaid online-payment orders older than a cutoff (used by the cleanup job)
+    List<OrderEntity> findByStatusAndCreatedAtBefore(String status, Instant cutoff);
+
     // Get all orders for Admin Dashboard
     List<OrderEntity> findAllByOrderByCreatedAtDesc();
 

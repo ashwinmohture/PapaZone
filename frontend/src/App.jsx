@@ -28,6 +28,102 @@ import Recommendations from './ai/Recommendations';
 import AdminAssistant from './ai/AdminAssistant';
 
 const money = n => '₹' + Number(n || 0).toFixed(2);
+
+// ================= PAYMENT LABELS =================
+
+const PAYMENT_METHOD_LABELS = {
+    COD: 'Cash on delivery',
+    CARD: 'Card (simulated)',
+    UPI: 'UPI (simulated)',
+    FREE: 'Free',
+    RAZORPAY: 'Razorpay (online)'
+};
+
+const paymentMethodLabel = method =>
+    PAYMENT_METHOD_LABELS[String(method || '').toUpperCase()] || 'Not recorded';
+
+// Human friendly payment status. deliveryStatus is optional (used to show COD as collected).
+function paymentStatusLabel(order, deliveryStatus) {
+    const status = String(order?.paymentStatus || 'PENDING').toUpperCase();
+    const delivered = (deliveryStatus || order?.status) === 'DELIVERED';
+
+    if (status === 'PENDING' && order?.paymentMethod === 'COD') {
+        return delivered ? 'PAID (cash collected)' : 'DUE ON DELIVERY';
+    }
+
+    return status.replaceAll('_', ' ');
+}
+
+// ================= RAZORPAY =================
+
+function loadRazorpayScript() {
+    return new Promise((resolve, reject) => {
+        if (window.Razorpay) return resolve();
+
+        const existing = document.getElementById('razorpay-checkout-js');
+        if (existing) {
+            existing.addEventListener('load', () => resolve());
+            existing.addEventListener('error', () => reject(new Error('Unable to load Razorpay')));
+            return;
+        }
+
+        const script = document.createElement('script');
+        script.id = 'razorpay-checkout-js';
+        script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error('Unable to load Razorpay. Check your internet connection.'));
+        document.body.appendChild(script);
+    });
+}
+
+// Opens Razorpay Checkout for an order, then verifies the payment on the server.
+// Resolves with the confirmed order; rejects with an Error (err.code === 'DISMISSED' if the user closed it).
+async function payWithRazorpay(orderId, details) {
+    await loadRazorpayScript();
+
+    return new Promise((resolve, reject) => {
+        const rzp = new window.Razorpay({
+            key: details.keyId,
+            amount: details.amount,
+            currency: details.currency,
+            order_id: details.razorpayOrderId,
+            name: 'PapaZone',
+            description: `Order #${orderId}`,
+            theme: { color: '#c8202d' },
+
+            handler: async response => {
+                try {
+                    const verified = await api.post(`/orders/${orderId}/payment/verify`, {
+                        razorpay_order_id: response.razorpay_order_id,
+                        razorpay_payment_id: response.razorpay_payment_id,
+                        razorpay_signature: response.razorpay_signature
+                    });
+                    resolve(verified.data);
+                } catch (error) {
+                    reject(new Error(
+                        error.response?.data?.message || 'Payment verification failed.'
+                    ));
+                }
+            },
+
+            modal: {
+                ondismiss: () => {
+                    const err = new Error('Payment was cancelled.');
+                    err.code = 'DISMISSED';
+                    reject(err);
+                }
+            }
+        });
+
+        rzp.on('payment.failed', response => {
+            reject(new Error(
+                response.error?.description || 'Payment failed. Please try again.'
+            ));
+        });
+
+        rzp.open();
+    });
+}
 function parseOrderItems(itemsJson) {
     if (!itemsJson) return [];
 
@@ -611,6 +707,10 @@ function Checkout({ onDone }) {
     const [address, setAddress] = useState('');
     const [method, setMethod] = useState('COD');
     const [msg, setMsg] = useState('');
+    const [paying, setPaying] = useState(false);
+
+    // Set when an online-payment order exists but is not paid yet (so the user can retry).
+    const [pending, setPending] = useState(null);
 
     const nav = useNavigate();
 
@@ -620,14 +720,48 @@ function Checkout({ onDone }) {
             .catch(() => {});
     }, []);
 
+    async function runRazorpay(orderId, details) {
+        try {
+            await payWithRazorpay(orderId, details);
+            setPending(null);
+            onDone();
+            nav(`/orders/${orderId}`);
+        } catch (error) {
+            // Keep the unpaid order so the user can retry without re-entering anything.
+            setPending({ orderId });
+            setMsg(
+                error.code === 'DISMISSED'
+                    ? `Payment not completed. Your order #${orderId} is saved - click "Pay now" to try again.`
+                    : error.message
+            );
+        } finally {
+            setPaying(false);
+        }
+    }
+
     async function place(e) {
         e.preventDefault();
+        setMsg('');
+        setPaying(true);
 
         try {
+            // Retry of an existing unpaid Razorpay order.
+            if (pending) {
+                const retry = await api.post(`/orders/${pending.orderId}/payment/razorpay`);
+                await runRazorpay(pending.orderId, retry.data.razorpay);
+                return;
+            }
+
             const response = await api.post('/orders/checkout', {
                 address,
                 paymentMethod: method
             });
+
+            // Online payment: order is created, now collect the money.
+            if (response.data.razorpay) {
+                await runRazorpay(response.data.id, response.data.razorpay);
+                return;
+            }
 
             onDone();
             nav(`/orders/${response.data.id}`);
@@ -636,6 +770,7 @@ function Checkout({ onDone }) {
                 error.response?.data?.message ||
                 'Checkout failed.'
             );
+            setPaying(false);
         }
     }
 
@@ -666,11 +801,14 @@ function Checkout({ onDone }) {
 
                     <select
                         value={method}
+                        disabled={!!pending}
                         onChange={e => setMethod(e.target.value)}
                     >
                         <option value="COD">Cash on delivery</option>
                         <option value="CARD">Card (simulated)</option>
                         <option value="UPI">UPI (simulated)</option>
+                        <option value="FREE">Free (promo / no payment)</option>
+                        <option value="RAZORPAY">Pay online - Razorpay (UPI / Card / NetBanking)</option>
                     </select>
 
                     <div className="total">
@@ -685,17 +823,30 @@ function Checkout({ onDone }) {
                         </strong>
                     </div>
 
+                    {method === 'FREE' && (
+                        <p className="notice">
+                            No payment is needed. Your order is confirmed instantly.
+                        </p>
+                    )}
+
                     <button
                         className="primary full"
-                        disabled={!cart.items?.length}
+                        disabled={(!cart.items?.length && !pending) || paying}
                     >
-                        Place order
+                        {paying
+                            ? 'Please wait...'
+                            : pending
+                                ? 'Pay now'
+                                : method === 'RAZORPAY'
+                                    ? 'Pay & place order'
+                                    : 'Place order'}
                     </button>
                 </form>
 
                 <small>
                     Card and UPI payments are simulated in this demo.
-                    No real money is charged.
+                    No real money is charged. Free orders need no payment.
+                    Razorpay runs in test mode unless live keys are configured.
                 </small>
             </div>
         </main>
@@ -736,6 +887,11 @@ function Orders() {
                             <span>
                                 {new Date(order.createdAt).toLocaleString()}
                             </span>
+                            <span>
+                                {paymentMethodLabel(order.paymentMethod)}
+                                {' · '}
+                                {paymentStatusLabel(order)}
+                            </span>
                         </div>
 
                         <span className="status">{order.status}</span>
@@ -765,6 +921,8 @@ function Track() {
     const [o, setO] = useState(null);
     const [d, setD] = useState(null);
     const [error, setError] = useState('');
+    const [payMsg, setPayMsg] = useState('');
+    const [paying, setPaying] = useState(false);
 
     const steps = [
         'PLACED',
@@ -832,9 +990,31 @@ function Track() {
         return <main className="page">Loading order...</main>;
     }
 
+    async function payNow() {
+        setPaying(true);
+        setPayMsg('');
+
+        try {
+            const retry = await api.post(`/orders/${o.id}/payment/razorpay`);
+            const confirmed = await payWithRazorpay(o.id, retry.data.razorpay);
+            setO(confirmed);
+        } catch (error) {
+            setPayMsg(
+                error.code === 'DISMISSED'
+                    ? 'Payment not completed. You can try again.'
+                    : (error.response?.data?.message || error.message)
+            );
+        } finally {
+            setPaying(false);
+        }
+    }
+
     // Delivery Service is the source of truth for delivery progress.
+    // A cancelled / refunded order must not show stale delivery progress.
     const currentStatus = (
-        d?.status || o.status || 'PLACED'
+        o.status === 'CANCELLED'
+            ? 'CANCELLED'
+            : (d?.status || o.status || 'PLACED')
     ).toUpperCase();
 
     const normalizedStatus =
@@ -883,6 +1063,27 @@ function Track() {
                     Order total <b>{money(o.total)}</b>
                 </p>
 
+                <p>
+                    Payment: <b>{paymentMethodLabel(o.paymentMethod)}</b>
+                    {' · '}
+                    <span className="status">
+                        {paymentStatusLabel(o, normalizedStatus)}
+                    </span>
+                </p>
+
+                {o.status === 'PAYMENT_PENDING' && (
+                    <>
+                        {payMsg && <p className="notice">{payMsg}</p>}
+                        <button
+                            className="primary full"
+                            disabled={paying}
+                            onClick={payNow}
+                        >
+                            {paying ? 'Please wait...' : `Pay ${money(o.total)} now`}
+                        </button>
+                    </>
+                )}
+
                 {d && (
                     <p>
                         Delivery partner: <b>{d.provider}</b>
@@ -914,6 +1115,7 @@ function Admin() {
     const [filter, setFilter] = useState('ALL');
     const [searchTerm, setSearchTerm] = useState('');
     const [expandedOrderId, setExpandedOrderId] = useState(null);
+    const [refundingId, setRefundingId] = useState(null);
 
     const [form, setForm] = useState({
         name: '',
@@ -984,6 +1186,8 @@ function Admin() {
     const totalOrders = orders.length;
 
     const getDeliveryStatus = order => {
+        if (order.status === 'CANCELLED') return 'CANCELLED';
+
         const status = deliveries[order.id]?.status || order.status || 'PLACED';
         return status === 'CREATED' ? 'PLACED' : status;
     };
@@ -1059,6 +1263,35 @@ function Admin() {
     }
 
     // Advance delivery status sequentially
+    // Online (Razorpay) payments are refunded through the gateway; the order is then cancelled.
+    const canRefund = order =>
+        ['PAID', 'REFUND_REQUIRED'].includes(
+            String(order.paymentStatus || '').toUpperCase()
+        ) && order.paymentMethod !== 'FREE';
+
+    async function refundOrder(order) {
+        const ok = window.confirm(
+            `Refund ${money(order.total)} for order #${order.id}?\n\n` +
+            `Razorpay payments are returned to the customer's original payment method ` +
+            `and the order will be cancelled. This cannot be undone.`
+        );
+
+        if (!ok) return;
+
+        setRefundingId(order.id);
+        setMsg('');
+
+        try {
+            await api.post(`/orders/${order.id}/refund`);
+            await load();
+            setMsg(`Order #${order.id} refunded and cancelled.`);
+        } catch (error) {
+            setMsg(error.response?.data?.message || 'Refund failed.');
+        } finally {
+            setRefundingId(null);
+        }
+    }
+
     async function advanceDelivery(delivery) {
         if (!delivery) {
             setMsg('Delivery record not found');
@@ -1300,6 +1533,11 @@ function Admin() {
                                     <small>Address: {order.address}</small>
                                     <small>Amount: {money(order.total)}</small>
                                     <small>Order Status: {order.status}</small>
+                                    <small>
+                                        Payment: {paymentMethodLabel(order.paymentMethod)}
+                                        {' · '}
+                                        {paymentStatusLabel(order, status)}
+                                    </small>
                                     <small>Delivery Status: {status}</small>
 
                                     {delivery && (
@@ -1324,7 +1562,9 @@ function Admin() {
                                 </div>
 
                                 <div className="admin-order-actions">
-                                    {delivery && nextStatus ? (
+                                    {order.status === 'CANCELLED' ? (
+                                        <span className="status">CANCELLED</span>
+                                    ) : delivery && nextStatus ? (
                                         <button
                                             className="primary"
                                             onClick={() => advanceDelivery(delivery)}
@@ -1335,6 +1575,19 @@ function Admin() {
                                         <span className="status">DELIVERED</span>
                                     ) : (
                                         <span className="status">NO DELIVERY</span>
+                                    )}
+
+                                    {canRefund(order) && (
+                                        <button
+                                            type="button"
+                                            className="refund-btn"
+                                            disabled={refundingId === order.id}
+                                            onClick={() => refundOrder(order)}
+                                        >
+                                            {refundingId === order.id
+                                                ? 'Refunding...'
+                                                : 'Refund'}
+                                        </button>
                                     )}
                                 </div>
 
@@ -1379,8 +1632,13 @@ function Admin() {
                                         </div>
 
                                         <div>
+                                            <span>Payment Method</span>
+                                            <strong>{paymentMethodLabel(order.paymentMethod)}</strong>
+                                        </div>
+
+                                        <div>
                                             <span>Payment Status</span>
-                                            <strong>{order.paymentStatus || 'PENDING'}</strong>
+                                            <strong>{paymentStatusLabel(order, status)}</strong>
                                         </div>
 
                                         <div>
