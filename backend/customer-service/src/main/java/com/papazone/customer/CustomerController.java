@@ -14,6 +14,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import service.JwtService;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtException;
 
 @RestController
 @RequestMapping("/customers")
@@ -198,6 +200,42 @@ public class CustomerController {
                                 "email", customer.getEmail()
                         )))
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    // GET THE AUTHENTICATED CUSTOMER PROFILE (identity comes from the signed JWT)
+    @GetMapping("/me")
+    public ResponseEntity<?> getCurrentCustomer(
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+
+        if (authorization == null || !authorization.startsWith("Bearer ")
+                || authorization.length() <= 7) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("message", "Bearer token is required"));
+        }
+
+        try {
+            Claims claims = jwtService.validateToken(authorization.substring(7).trim());
+            Object idClaim = claims.get("customerId");
+            Long customerId = idClaim instanceof Number number
+                    ? number.longValue()
+                    : Long.valueOf(String.valueOf(
+                            idClaim == null ? claims.getSubject() : idClaim));
+
+            return repo.findById(customerId)
+                    .<ResponseEntity<?>>map(customer -> ResponseEntity.ok(
+                            Map.of(
+                                    "id", customer.getId(),
+                                    "name", customer.getName(),
+                                    "email", customer.getEmail(),
+                                    "phone", customer.getPhone() == null ? "" : customer.getPhone(),
+                                    "role", customer.getRole() == null ? "CUSTOMER" : customer.getRole()
+                            )))
+                    .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND)
+                            .body(Map.of("message", "Customer not found")));
+        } catch (JwtException | IllegalArgumentException ex) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("message", "Token is invalid or expired"));
+        }
     }
 
     // GET CUSTOMER DETAILS

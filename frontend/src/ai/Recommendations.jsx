@@ -42,7 +42,7 @@ export default function Recommendations({ onAdd }) {
                 menuItemId: item.id,
                 quantity: 1
             });
-            setNote(`${item.name} added to cart`);
+            setNote(`${item.name} added to cart successfully!`);
             onAdd?.();
         } catch (e) {
             setNote('Could not add item. Please try again.');
@@ -62,12 +62,17 @@ export default function Recommendations({ onAdd }) {
                 </div>
             </div>
 
-            {note && <p className="notice">{note}</p>}
+            {note && <p className={note.toLowerCase().includes("successfully") ? "notice success-notice" : "notice"} role="status">{note}</p>}
 
             <div className="menu-grid">
                 {items.map(item => (
                     <article className="food-card" key={item.id}>
-                        <div className="food-img">
+                        <button
+                            type="button"
+                            className="food-img food-img-action"
+                            onClick={() => add(item)}
+                            aria-label={`Add ${item.name} to cart`}
+                        >
                             <img
                                 src={item.imageUrl || FALLBACK_IMG}
                                 alt={item.name}
@@ -76,7 +81,7 @@ export default function Recommendations({ onAdd }) {
                                 }}
                             />
                             <span>{BADGE[item.kind] || item.category}</span>
-                        </div>
+                        </button>
 
                         <div className="food-info">
                             <h3>{item.name}</h3>

@@ -13,6 +13,10 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.*;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import jakarta.servlet.http.HttpServletRequest;
 import com.papazone.order.security.AuthenticatedUser;
 
@@ -452,10 +456,24 @@ public class OrderController {
     }
 
     @GetMapping("/my-orders")
-    public ResponseEntity<?> myOrders(HttpServletRequest request) {
+    public ResponseEntity<?> myOrders(
+            HttpServletRequest request,
+            @RequestParam(name = "page", required = false) Integer page,
+            @RequestParam(name = "size", required = false) Integer size) {
         AuthenticatedUser user = currentUser(request);
         if (user == null) return unauthorized();
-        return ResponseEntity.ok(repo.findByCustomerIdOrderByCreatedAtDesc(user.customerId()));
+
+        // Keep the old list response for legacy callers; paginated callers receive Spring's Page.
+        if (page == null && size == null) {
+            return ResponseEntity.ok(repo.findByCustomerIdOrderByCreatedAtDesc(user.customerId()));
+        }
+
+        Pageable pageable = PageRequest.of(
+                Math.max(0, page == null ? 0 : page),
+                Math.min(50, Math.max(1, size == null ? 5 : size)),
+                Sort.by(Sort.Direction.DESC, "createdAt"));
+        Page<OrderEntity> result = repo.findByCustomerIdOrderByCreatedAtDesc(user.customerId(), pageable);
+        return ResponseEntity.ok(result);
     }
 
 
@@ -582,20 +600,29 @@ public class OrderController {
 
     // Get All Orders for Admin Dashboard
     @GetMapping
-    public ResponseEntity<?> getAllOrders(HttpServletRequest request) {
+    public ResponseEntity<?> getAllOrders(
+            HttpServletRequest request,
+            @RequestParam(name = "page", required = false) Integer page,
+            @RequestParam(name = "size", required = false) Integer size) {
         AuthenticatedUser user = currentUser(request);
         if (user == null) return unauthorized();
         if (!user.isAdmin()) return ResponseEntity.status(403).body(Map.of("message", "Admin access required"));
 
-        // Unpaid online-payment orders are not real orders yet.
-        List<OrderEntity> orders = repo.findAllByOrderByCreatedAtDesc().stream()
-                .filter(o -> !PAYMENT_PENDING.equals(o.getStatus()))
-                .toList();
-
-        for (OrderEntity order : orders) {
-            synchronizeDeliveryStatus(order);
+        // Keep compatibility for existing internal/admin callers that do not request pagination.
+        if (page == null && size == null) {
+            List<OrderEntity> allOrders = repo.findAllByOrderByCreatedAtDesc().stream()
+                    .filter(o -> !PAYMENT_PENDING.equals(o.getStatus()))
+                    .toList();
+            for (OrderEntity order : allOrders) synchronizeDeliveryStatus(order);
+            return ResponseEntity.ok(allOrders);
         }
 
+        Pageable pageable = PageRequest.of(
+                Math.max(0, page == null ? 0 : page),
+                Math.min(50, Math.max(1, size == null ? 5 : size)),
+                Sort.by(Sort.Direction.DESC, "createdAt"));
+        Page<OrderEntity> orders = repo.findByStatusNotOrderByCreatedAtDesc(PAYMENT_PENDING, pageable);
+        orders.getContent().forEach(this::synchronizeDeliveryStatus);
         return ResponseEntity.ok(orders);
     }
 

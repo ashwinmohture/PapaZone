@@ -195,7 +195,7 @@ function Header({ count, role }) {
                     Cart <b>{count}</b>
                 </Link>
 
-                <Link className="userlink" to="/login">
+                <Link className="userlink" to={isLoggedIn ? "/profile" : "/login"} aria-label={isLoggedIn ? "My profile" : "Sign in"}>
                     <User size={18} />
                 </Link>
             </div>
@@ -259,6 +259,8 @@ function App() {
 
                 <Route path="/orders/:id" element={<Track />} />
 
+                <Route path="/profile" element={<Profile onLogout={setRole} />} />
+
                 <Route path="/admin" element={<AdminRoute />} />
             </Routes>
 
@@ -305,7 +307,7 @@ function Menu({ onAdd }) {
                 quantity: 1
             });
 
-            setMsg(`${item.name} added to cart`);
+            setMsg(`${item.name} added to cart successfully!`);
 
             onAdd();
         } catch (error) {
@@ -377,7 +379,7 @@ function Menu({ onAdd }) {
                     ))}
                 </div>
 
-                {msg && <p className="notice">{msg}</p>}
+                {msg && <p className={msg.toLowerCase().includes("added to cart") ? "notice success-notice" : "notice"} role="status">{msg}</p>}
 
                 <div className="menu-grid">
                     {filtered.map(item => (
@@ -696,6 +698,145 @@ function Login({ onLogin }) {
 }
 
 
+// ================= CUSTOMER PROFILE =================
+
+function Profile({ onLogout }) {
+    const [customer, setCustomer] = useState(null);
+    const [orders, setOrders] = useState([]);
+    const [deliveryStatuses, setDeliveryStatuses] = useState({});
+    const [error, setError] = useState('');
+    const [ordersError, setOrdersError] = useState('');
+    const [loading, setLoading] = useState(true);
+    const navigate = useNavigate();
+
+    useEffect(() => {
+        let active = true;
+
+        async function loadProfile() {
+            if (!localStorage.getItem('token')) {
+                navigate('/login', { replace: true });
+                return;
+            }
+
+            // A failed order-history request must not hide profile details or Logout.
+            try {
+                const profileResponse = await api.get('/customers/me');
+                if (active) setCustomer(profileResponse.data);
+            } catch (profileError) {
+                if (profileError.response?.status === 401) {
+                    ['token', 'customerId', 'customerName', 'role'].forEach(key => localStorage.removeItem(key));
+                    onLogout?.('CUSTOMER');
+                    navigate('/login', { replace: true });
+                    return;
+                }
+                if (active) {
+                    setError(profileError.response?.data?.message || 'Unable to load your profile. Please try again.');
+                }
+            } finally {
+                if (active) setLoading(false);
+            }
+
+            try {
+                const ordersResponse = await api.get('/orders/my-orders', { params: { page: 0, size: 5 } });
+                const customerOrders = Array.isArray(ordersResponse.data) ? ordersResponse.data : (ordersResponse.data?.content || []);
+                if (!active) return;
+                setOrders(customerOrders);
+                setOrdersError('');
+
+                const deliveryResults = await Promise.all(customerOrders.map(async order => {
+                    try {
+                        const deliveryResponse = await api.get(`/deliveries/order/${order.id}`);
+                        return [order.id, deliveryResponse.data?.status || order.status || 'PLACED'];
+                    } catch {
+                        return [order.id, order.status || 'PLACED'];
+                    }
+                }));
+                if (active) setDeliveryStatuses(Object.fromEntries(deliveryResults));
+            } catch (ordersRequestError) {
+                if (active) {
+                    setOrdersError(ordersRequestError.response?.data?.message || 'Order history is temporarily unavailable.');
+                }
+            }
+        }
+
+        loadProfile();
+        return () => { active = false; };
+    }, [navigate, onLogout]);
+
+    function logout() {
+        ['token', 'customerId', 'customerName', 'role'].forEach(key => localStorage.removeItem(key));
+        onLogout?.('CUSTOMER');
+        navigate('/login', { replace: true });
+    }
+
+    if (loading) return <main className="page narrow"><p>Loading your profile...</p></main>;
+
+    return (
+        <main className="page profile-page">
+            <div className="page-title">
+                <span className="eyebrow">YOUR PAPAZONE ACCOUNT</span>
+                <h1>My profile</h1>
+                <p>Manage your account and keep track of your food journey.</p>
+            </div>
+
+            {error && <p className="notice">{error}</p>}
+
+            {customer && (
+                <section className="profile-card">
+                    <div className="profile-avatar"><User size={30} /></div>
+                    <div className="profile-details">
+                        <h2>{customer.name}</h2>
+                        <p>{customer.email}</p>
+                        <p>{customer.phone || 'Phone number not added'}</p>
+                        <small>Customer ID: #{customer.id}</small>
+                    </div>
+                    <button className="logout-button" onClick={logout}>
+                        <User size={16} /> Log out
+                    </button>
+                </section>
+            )}
+
+            <section className="profile-orders">
+                <div className="section-head">
+                    <div>
+                        <span className="eyebrow">YOUR FOOD JOURNEY</span>
+                        <h2>Order history</h2>
+                    </div>
+                    <Link className="profile-orders-link" to="/orders">View all orders <ArrowRight size={16} /></Link>
+                </div>
+
+                {ordersError && <p className="notice">{ordersError}</p>}
+
+                {orders.length ? orders.map((order) => {
+                    const customerOrderSequence = [...orders]
+                        .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+                        .findIndex(customerOrder => String(customerOrder.id) === String(order.id)) + 1;
+                    return (
+                    <Link className="order-card profile-order-card" to={`/orders/${order.id}`} key={order.id}>
+                        <div>
+                            <b>Order #{order.id}</b>
+                            <span>Your order #{customerOrderSequence}</span>
+                            <span>{new Date(order.createdAt).toLocaleString()}</span>
+                            <span>{paymentMethodLabel(order.paymentMethod)} · {paymentStatusLabel(order)}</span>
+                        </div>
+                        <span className="status">{String(deliveryStatuses[order.id] || order.status || 'PLACED').replaceAll('_', ' ')}</span>
+                        <strong>{money(order.total)}</strong>
+                        <span className="track-order-link">Track order <ArrowRight size={15} /></span>
+                    </Link>
+                    );
+                }) : !ordersError ? (
+                    <div className="emptybox">
+                        <ClipboardList size={36} />
+                        <h2>No orders yet</h2>
+                        <p>Your placed orders will appear here.</p>
+                        <Link className="primary" to="/">Explore menu</Link>
+                    </div>
+                ) : null}
+            </section>
+        </main>
+    );
+}
+
 // ================= CHECKOUT =================
 
 function Checkout({ onDone }) {
@@ -859,61 +1000,72 @@ function Checkout({ onDone }) {
 function Orders() {
     const [orders, setOrders] = useState([]);
     const [err, setErr] = useState('');
+    const [page, setPage] = useState(0);
+    const [totalPages, setTotalPages] = useState(0);
+    const [totalElements, setTotalElements] = useState(0);
+    const PAGE_SIZE = 5;
 
     useEffect(() => {
-        api.get('/orders/my-orders')
-            .then(response => setOrders(response.data))
-            .catch(() => setErr('Unable to load orders.'));
-    }, []);
+        let active = true;
+        setErr('');
+        api.get('/orders/my-orders', { params: { page, size: PAGE_SIZE } })
+            .then(response => {
+                if (!active) return;
+                const data = response.data;
+                const content = Array.isArray(data) ? data : (data.content || []);
+                setOrders(content);
+                setTotalPages(data.totalPages ?? 1);
+                setTotalElements(data.totalElements ?? content.length);
+            })
+            .catch(() => { if (active) setErr('Unable to load orders.'); });
+        return () => { active = false; };
+    }, [page]);
 
     return (
         <main className="page">
             <div className="page-title">
                 <span className="eyebrow">YOUR FOOD JOURNEY</span>
                 <h1>My orders</h1>
+                <p>{totalElements} orders in total · Showing 5 orders per page</p>
             </div>
-
             {err && <p className="notice">{err}</p>}
-
             {orders.length ? (
-                orders.map(order => (
-                    <Link
-                        className="order-card"
-                        to={`/orders/${order.id}`}
-                        key={order.id}
-                    >
-                        <div>
-                            <b>Order #{order.id}</b>
-                            <span>
-                                {new Date(order.createdAt).toLocaleString()}
-                            </span>
-                            <span>
-                                {paymentMethodLabel(order.paymentMethod)}
-                                {' · '}
-                                {paymentStatusLabel(order)}
-                            </span>
-                        </div>
-
-                        <span className="status">{order.status}</span>
-
-                        <strong>{money(order.total)}</strong>
-
-                        <ArrowRight />
-                    </Link>
-                ))
-            ) : (
+                <>
+                    {orders.map(order => (
+                        <Link className="order-card" to={`/orders/${order.id}`} key={order.id}>
+                            <div>
+                                <b>Order #{order.id}</b>
+                                <span>{new Date(order.createdAt).toLocaleString()}</span>
+                                <span>{paymentMethodLabel(order.paymentMethod)} · {paymentStatusLabel(order)}</span>
+                            </div>
+                            <span className="status">{order.status}</span>
+                            <strong>{money(order.total)}</strong>
+                            <ArrowRight />
+                        </Link>
+                    ))}
+                    <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
+                </>
+            ) : !err ? (
                 <div className="emptybox">
                     <ClipboardList size={40} />
                     <h2>No orders yet</h2>
                     <Link className="primary" to="/">Start ordering</Link>
                 </div>
-            )}
+            ) : null}
         </main>
     );
 }
 
-
-// ================= ORDER TRACKING =================
+function Pagination({ page, totalPages, onPageChange }) {
+    if (totalPages <= 1) return null;
+    return (
+        <div className="pagination" aria-label="Order pages">
+            <button type="button" disabled={page <= 0} onClick={() => onPageChange(page - 1)}>Previous</button>
+            <span>Page {page + 1} of {totalPages}</span>
+            <button type="button" disabled={page >= totalPages - 1} onClick={() => onPageChange(page + 1)}>Next</button>
+        </div>
+    );
+}
 
 function Track() {
     const { id } = useParams();
@@ -1116,6 +1268,10 @@ function Admin() {
     const [searchTerm, setSearchTerm] = useState('');
     const [expandedOrderId, setExpandedOrderId] = useState(null);
     const [refundingId, setRefundingId] = useState(null);
+    const [ordersPage, setOrdersPage] = useState(0);
+    const [ordersTotalPages, setOrdersTotalPages] = useState(0);
+    const [ordersTotalElements, setOrdersTotalElements] = useState(0);
+    const ORDERS_PAGE_SIZE = 5;
 
     const [form, setForm] = useState({
         name: '',
@@ -1135,21 +1291,25 @@ function Admin() {
     ];
 
     // Load menu items, orders and deliveries
-    async function load() {
+    async function load(pageToLoad = ordersPage) {
         try {
             setLoading(true);
             setMsg('');
 
             const [menuResponse, orderResponse] = await Promise.all([
                 api.get('/menu'),
-                api.get('/orders')
+                api.get('/orders', { params: { page: pageToLoad, size: ORDERS_PAGE_SIZE } })
             ]);
 
             setItems(menuResponse.data);
-            setOrders(orderResponse.data);
+            const pageData = orderResponse.data;
+            const pageOrders = Array.isArray(pageData) ? pageData : (pageData.content || []);
+            setOrders(pageOrders);
+            setOrdersTotalPages(pageData.totalPages ?? 1);
+            setOrdersTotalElements(pageData.totalElements ?? pageOrders.length);
 
             const deliveryResults = await Promise.all(
-                orderResponse.data.map(async order => {
+                pageOrders.map(async order => {
                     try {
                         const response = await api.get(
                             `/deliveries/order/${order.id}`
@@ -1183,7 +1343,7 @@ function Admin() {
     }, []);
 
     // Dashboard statistics
-    const totalOrders = orders.length;
+    const totalOrders = ordersTotalElements;
 
     const getDeliveryStatus = order => {
         if (order.status === 'CANCELLED') return 'CANCELLED';
@@ -1469,7 +1629,8 @@ function Admin() {
             {/* All Customer Orders */}
             <section className="checkout-card orders-admin">
 
-                <h3>All Customer Orders ({orders.length})</h3>
+                <h3>All Customer Orders ({ordersTotalElements})</h3>
+                <p className="orders-page-note">Showing up to 5 orders per page</p>
 
                 {/* Search Orders */}
                 <div className="admin-search">
@@ -1711,6 +1872,7 @@ function Admin() {
                         </div>
                     );
                 })}
+                <Pagination page={ordersPage} totalPages={ordersTotalPages} onPageChange={nextPage => { setOrdersPage(nextPage); load(nextPage); }} />
 
             </section>
 
